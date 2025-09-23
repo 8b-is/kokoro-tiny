@@ -1,0 +1,64 @@
+[package]
+name = "kokoro-tiny"
+version = "0.1.0"
+edition = "2021"
+authors = ["Hue & Aye <team@8b.is>"]
+description = "Minimal TTS crate using Kokoro - perfect for embedding in other apps"
+license = "Apache-2.0"
+homepage = "https://github.com/8b-is/kokoro-tiny"
+repository = "https://github.com/8b-is/kokoro-tiny"
+documentation = "https://docs.rs/kokoro-tiny"
+readme = "README.md"
+keywords = ["tts", "text-to-speech", "kokoro", "audio", "voice"]
+categories = ["multimedia::audio", "multimedia", "command-line-utilities"]
+exclude = ["*.wav", "*.mp3", "*.opus", "*.flac", "target/", ".git/", ".DS_Store", "0.onnx", "0.bin"]
+include = ["src/**/*", "Cargo.toml", "LICENSE", "README.md", "examples/**/*", "assets/fallback.wav"]
+
+[[bin]]
+name = "kokoro-speak"
+path = "src/main.rs"
+
+[dependencies]
+# Core ONNX Runtime for model inference
+ort = { version = "2.0.0-rc.10", features = ["download-binaries"] }
+
+# Essential for text processing and audio
+espeak-rs = "0.1.9"
+hound = "3.5.1"  # WAV support built-in
+ndarray = "0.16.1"
+ndarray-npy = "0.9.1"
+
+# Minimal async support for downloading model
+tokio = { version = "1.45", features = ["fs", "rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# For voice data loading
+serde_json = "1.0"
+
+# For CLI
+clap = { version = "4", features = ["derive"] }
+atty = "0.2"
+
+# Optional features
+mp3lame-encoder = { version = "0.2", optional = true }
+cpal = { version = "0.15", optional = true }
+rodio = { version = "0.19", optional = true }
+audiopus = { version = "0.2", optional = true }
+
+# Audio ducking support (reduces other audio while speaking)
+enigo = { version = "0.2", optional = true }  # Cross-platform input simulation for volume keys
+
+[features]
+default = ["playback", "ducking"]
+mp3 = ["mp3lame-encoder"]
+cuda = ["ort/cuda"]
+playback = ["cpal", "rodio"]
+ducking = ["enigo"]  # Audio ducking - reduces other audio volume during TTS
+opus-format = ["audiopus"]
+all-formats = ["mp3", "opus-format"]
+
+[[example]]
+name = "simple"
+
+[dev-dependencies]
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros"] }
