@@ -28,6 +28,7 @@ hound = "3.5.1"  # WAV support built-in
 ndarray = "0.16.1"
 ndarray-npy = "0.9.1"
 
+
 # Minimal async support for downloading model
 tokio = { version = "1.45", features = ["fs", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
