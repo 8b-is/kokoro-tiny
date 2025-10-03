@@ -45,7 +45,7 @@ const SAMPLE_RATE: u32 = 24000;
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0;
 // Pad token used to mark sequence boundaries (must be present in vocabulary)
-const PAD: &str = "$";
+const PAD: char = '$';
 
 // Get cache directory for shared model storage (Hue's suggestion!)
 fn get_cache_dir() -> PathBuf {
@@ -189,7 +189,7 @@ impl TtsEngine {
     }
 
     /// Convert audio to WAV bytes (for playback)
-    fn to_wav_bytes(&self, audio: &[f32]) -> Result<Vec<u8>, String> {
+    pub(crate) fn to_wav_bytes(&self, audio: &[f32]) -> Result<Vec<u8>, String> {
         let mut buffer = Vec::new();
         let spec = hound::WavSpec {
             channels: 1,
@@ -462,7 +462,11 @@ fn build_vocab() -> HashMap<char, i64> {
     let letters_ipa = "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ";
 
     // Ensure PAD is included first so it gets index 0 (matching original vocab)
-    let symbols: String = [PAD, punctuation, letters, letters_ipa].concat();
+    let mut symbols = String::new();
+    symbols.push(PAD);
+    symbols.push_str(punctuation);
+    symbols.push_str(letters);
+    symbols.push_str(letters_ipa);
 
     symbols
         .chars()
@@ -573,8 +577,7 @@ mod tests {
     #[test]
     fn test_vocab_contains_pad() {
         let vocab = build_vocab();
-        // PAD should be present as the first symbol ('$')
-        assert!(vocab.contains_key(&('$')),
-            "Vocabulary must contain the pad token '$'");
+        // PAD should be present as the first symbol
+        assert!(vocab.contains_key(&PAD), "Vocabulary must contain the pad token");
     }
 }

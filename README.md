@@ -106,18 +106,34 @@ Use `--list-voices` to see all options!
 
 ## Features
 
-Enable additional capabilities:
+Enable additional capabilities (features are opt-in):
 
 ```toml
 [dependencies]
 kokoro-tiny = { version = "0.1", features = ["all-formats"] }
 ```
 
-- `playback` - Direct audio playback (default)
+- `playback` - Direct audio playback (opt-in; enables `rodio`/`cpal`)
 - `mp3` - MP3 encoding support
 - `opus-format` - OPUS for streaming/VoIP
+- `flac-format` - FLAC output support
 - `cuda` - GPU acceleration
 - `all-formats` - All audio formats
+
+Note: `playback` pulls in system audio libraries (ALSA on Linux). It's disabled by default to avoid build failures on systems without those dev packages.
+
+To enable playback on Debian/Ubuntu-like systems, install the system deps then build with the feature:
+
+```bash
+sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+cargo build --features playback
+```
+
+To run examples with playback enabled:
+
+```bash
+cargo run --features playback --example simple
+```
 
 ## Examples
 
