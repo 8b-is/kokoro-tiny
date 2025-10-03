@@ -51,7 +51,6 @@ cuda = ["ort/cuda"]
 playback = ["cpal", "rodio"]
 opus-format = ["audiopus"]
 all-formats = ["mp3", "opus-format"]
-flac-format = []
 
 [[example]]
 name = "simple"
