@@ -45,6 +45,8 @@ const VOICES_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/d
 const SAMPLE_RATE: u32 = 24000;
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0;
+// Pad token used to mark sequence boundaries (must be present in vocabulary)
+const PAD: &str = "$";
 
 // Get cache directory for shared model storage (Hue's suggestion!)
 fn get_cache_dir() -> PathBuf {
@@ -133,8 +135,10 @@ impl TtsEngine {
         let phonemes = text_to_phonemes(text, "en", None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
 
-        // Join phonemes into a single string
-        let phonemes_str = phonemes.join("");
+    // Join phonemes into a single string and pad at the start/end so short
+    // inputs don't lose leading or trailing tokens (e.g. "it's 21:22")
+    let inner = phonemes.join("");
+    let phonemes_str = format!("{}{}{}", PAD, inner, PAD);
 
         // Tokenize phonemes using proper vocabulary
         let tokens = self.tokenize(&phonemes_str);
@@ -454,12 +458,12 @@ impl TtsEngine {
 
 // Build proper vocabulary for tokenization (matching original Kokoros)
 fn build_vocab() -> HashMap<char, i64> {
-    let pad = "$";
-    let punctuation = r#";:,.!?¡¿—…"«»"" "#;
+    let punctuation = r#";:,.!?¡¿—…"«»" "#;
     let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let letters_ipa = "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ";
 
-    let symbols: String = [pad, punctuation, letters, letters_ipa].concat();
+    // Ensure PAD is included first so it gets index 0 (matching original vocab)
+    let symbols: String = [PAD, punctuation, letters, letters_ipa].concat();
 
     symbols
         .chars()
@@ -565,5 +569,13 @@ mod tests {
         let _builder = TtsBuilder::new()
             .model_path("custom_model.onnx")
             .voices_path("custom_voices.bin");
+    }
+
+    #[test]
+    fn test_vocab_contains_pad() {
+        let vocab = build_vocab();
+        // PAD should be present as the first symbol ('$')
+        assert!(vocab.contains_key(&('$')),
+            "Vocabulary must contain the pad token '$'");
     }
 }
