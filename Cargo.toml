@@ -45,12 +45,13 @@ rodio = { version = "0.19", optional = true }
 audiopus = { version = "0.2", optional = true }
 
 [features]
-default = ["playback"]
+default = []
 mp3 = ["mp3lame-encoder"]
 cuda = ["ort/cuda"]
 playback = ["cpal", "rodio"]
 opus-format = ["audiopus"]
 all-formats = ["mp3", "opus-format"]
+flac-format = []
 
 [[example]]
 name = "simple"

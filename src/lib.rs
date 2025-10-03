@@ -36,7 +36,6 @@ use ort::{
 
 #[cfg(feature = "playback")]
 use rodio::{Decoder, OutputStream, Sink, Source};
-#[cfg(feature = "playback")]
 use std::io::Cursor;
 
 // Constants
