@@ -51,6 +51,8 @@ const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0;
 // Pad token used to mark sequence boundaries (must be present in vocabulary)
 const PAD: char = '$';
+// Maximum number of tokens the model can handle
+const MAX_TOKENS: usize = 512;
 
 /// Initializes espeak-ng, searching for the data directory.
 pub fn initialize_phonemizer() -> Result<(), String> {
@@ -91,7 +93,7 @@ fn get_cache_dir() -> PathBuf {
 /// Main TTS engine struct
 pub struct TtsEngine {
     session: Arc<Mutex<Session>>,
-    voices: HashMap<String, Vec<f32>>,
+    voices: HashMap<String, Vec<Vec<f32>>>,  // Changed to Vec<Vec<f32>> to store all styles
     vocab: HashMap<char, i64>,
 }
 
@@ -282,6 +284,117 @@ impl TtsEngine {
         Ok((audio, warnings))
     }
 
+    /// Synthesize text that exceeds token limit by splitting into smaller chunks.
+    /// This is called internally when text exceeds MAX_TOKENS.
+    fn synthesize_with_token_limit(&mut self, text: &str, voice: &str, speed: Option<f32>) -> Result<Vec<f32>, String> {
+        // Normalize the text first
+        let normalized = self.normalize_text(text);
+
+        // Split text by sentences to respect token boundaries
+        let re = Regex::new(r"([^.!?]+[.!?]+)").unwrap();
+        let mut full_audio = Vec::new();
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
+
+        let mut current_chunk = String::new();
+        
+        for cap in re.captures_iter(&normalized) {
+            let sentence = &cap[1];
+            
+            // Try adding this sentence to current chunk
+            let test_chunk = if current_chunk.is_empty() {
+                sentence.to_string()
+            } else {
+                format!("{} {}", current_chunk, sentence)
+            };
+
+            // Check if this would exceed token limit
+            let phonemes = text_to_phonemes(&test_chunk, "en", None, true, false)
+                .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
+            let phonemes_str = format!("{}{}{}", PAD, phonemes.join(""), PAD);
+            let tokens = self.tokenize(&phonemes_str);
+            
+            if !tokens.is_empty() && tokens[0].len() > MAX_TOKENS {
+                // Current chunk + sentence would exceed limit
+                // Synthesize current chunk if it's not empty
+                if !current_chunk.is_empty() {
+                    let chunk_audio = self.synthesize_direct(&current_chunk, voice, speed_val)?;
+                    full_audio.extend(chunk_audio);
+                    
+                    // Add a small pause between chunks
+                    let pause_samples = (SAMPLE_RATE as f32 * 0.1) as usize;
+                    full_audio.extend(vec![0.0; pause_samples]);
+                }
+                
+                // Start new chunk with current sentence
+                current_chunk = sentence.to_string();
+            } else {
+                // Add sentence to current chunk
+                current_chunk = test_chunk;
+            }
+        }
+
+        // Synthesize remaining chunk
+        if !current_chunk.is_empty() {
+            let chunk_audio = self.synthesize_direct(&current_chunk, voice, speed_val)?;
+            full_audio.extend(chunk_audio);
+        }
+
+        // Fallback: if no chunks were processed, try splitting by words
+        if full_audio.is_empty() {
+            return self.synthesize_by_words(text, voice, speed);
+        }
+
+        Ok(full_audio)
+    }
+
+    /// Fallback method to synthesize very long text by splitting on words.
+    fn synthesize_by_words(&mut self, text: &str, voice: &str, speed: Option<f32>) -> Result<Vec<f32>, String> {
+        let normalized = self.normalize_text(text);
+        let words: Vec<&str> = normalized.split_whitespace().collect();
+        let mut full_audio = Vec::new();
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
+
+        let mut current_chunk = String::new();
+        
+        for word in words {
+            let test_chunk = if current_chunk.is_empty() {
+                word.to_string()
+            } else {
+                format!("{} {}", current_chunk, word)
+            };
+
+            // Check if this would exceed token limit
+            let phonemes = text_to_phonemes(&test_chunk, "en", None, true, false)
+                .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
+            let phonemes_str = format!("{}{}{}", PAD, phonemes.join(""), PAD);
+            let tokens = self.tokenize(&phonemes_str);
+            
+            if !tokens.is_empty() && tokens[0].len() > MAX_TOKENS {
+                // Synthesize current chunk
+                if !current_chunk.is_empty() {
+                    let chunk_audio = self.synthesize_direct(&current_chunk, voice, speed_val)?;
+                    full_audio.extend(chunk_audio);
+                    
+                    let pause_samples = (SAMPLE_RATE as f32 * 0.05) as usize;
+                    full_audio.extend(vec![0.0; pause_samples]);
+                }
+                
+                current_chunk = word.to_string();
+            } else {
+                current_chunk = test_chunk;
+            }
+        }
+
+        // Synthesize remaining chunk
+        if !current_chunk.is_empty() {
+            let chunk_audio = self.synthesize_direct(&current_chunk, voice, speed_val)?;
+            full_audio.extend(chunk_audio);
+        }
+
+        Ok(full_audio)
+    }
+
+
     /// Synthesize speech from text
     pub fn synthesize(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<Vec<f32>, String> {
         // Normalize text first
@@ -295,20 +408,19 @@ impl TtsEngine {
         let voice = voice.unwrap_or(DEFAULT_VOICE);
         let speed_val = speed.unwrap_or(DEFAULT_SPEED);
 
-        // Get voice style
-        let style = self.voices.get(voice)
-            .ok_or_else(|| format!("Voice '{}' not found", voice))?
-            .clone();
+        // Get voice styles (all 510 variations)
+        let voice_styles = self.voices.get(voice)
+            .ok_or_else(|| format!("Voice '{}' not found", voice))?;
 
         // Convert text to phonemes
         // Parameters: text, language, voice variant (None for default), preserve punctuation, with_stress
         let phonemes = text_to_phonemes(&normalized, "en", None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
 
-    // Join phonemes into a single string and pad at the start/end so short
-    // inputs don't lose leading or trailing tokens (e.g. "it's 21:22")
-    let inner = phonemes.join("");
-    let phonemes_str = format!("{}{}{}", PAD, inner, PAD);
+        // Join phonemes into a single string and pad at the start/end so short
+        // inputs don't lose leading or trailing tokens (e.g. "it's 21:22")
+        let inner = phonemes.join("");
+        let phonemes_str = format!("{}{}{}", PAD, inner, PAD);
 
         // Check if we have any valid phonemes
         if phonemes_str.is_empty() {
@@ -323,8 +435,67 @@ impl TtsEngine {
             return Err("Text produced no valid tokens for synthesis".to_string());
         }
 
+        let token_count = tokens[0].len();
+
+        // Check if we exceed the token limit
+        if token_count > MAX_TOKENS {
+            // Split the text and synthesize in chunks
+            return self.synthesize_with_token_limit(text, voice, speed);
+        }
+
+        // Select style based on token count (clamp to valid range)
+        let style_index = token_count.min(voice_styles.len() - 1);
+        let style = voice_styles[style_index].clone();
+
         // Run inference
         let audio = self.infer(tokens, style, speed_val)?;
+
+        Ok(audio)
+    }
+
+    /// Internal method to synthesize without checking token limit (to avoid recursion)
+    fn synthesize_direct(&mut self, text: &str, voice: &str, speed: f32) -> Result<Vec<f32>, String> {
+        // Normalize text first
+        let normalized = self.normalize_text(text);
+
+        // Return empty audio for empty text
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Get voice styles (all 510 variations)
+        let voice_styles = self.voices.get(voice)
+            .ok_or_else(|| format!("Voice '{}' not found", voice))?;
+
+        // Convert text to phonemes
+        let phonemes = text_to_phonemes(&normalized, "en", None, true, false)
+            .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
+
+        // Join phonemes into a single string and pad
+        let inner = phonemes.join("");
+        let phonemes_str = format!("{}{}{}", PAD, inner, PAD);
+
+        // Check if we have any valid phonemes
+        if phonemes_str.is_empty() {
+            return Err("Text produced no valid phonemes".to_string());
+        }
+
+        // Tokenize phonemes using proper vocabulary
+        let tokens = self.tokenize(&phonemes_str);
+
+        // Check if we have any valid tokens
+        if tokens.is_empty() || tokens[0].is_empty() {
+            return Err("Text produced no valid tokens for synthesis".to_string());
+        }
+
+        let token_count = tokens[0].len();
+
+        // Select style based on token count (clamp to valid range)
+        let style_index = token_count.min(voice_styles.len() - 1);
+        let style = voice_styles[style_index].clone();
+
+        // Run inference
+        let audio = self.infer(tokens, style, speed)?;
 
         Ok(audio)
     }
@@ -661,7 +832,7 @@ fn build_vocab() -> HashMap<char, i64> {
         .collect()
 }
 
-fn load_voices(path: &str) -> Result<HashMap<String, Vec<f32>>, String> {
+fn load_voices(path: &str) -> Result<HashMap<String, Vec<Vec<f32>>>, String> {
     let mut npz = NpzReader::new(File::open(path).map_err(|e| format!("Failed to open voices file: {}", e))?)
         .map_err(|e| format!("Failed to read NPZ: {:?}", e))?;
     let mut voices = HashMap::new();
@@ -671,17 +842,25 @@ fn load_voices(path: &str) -> Result<HashMap<String, Vec<f32>>, String> {
         let arr: ArrayBase<OwnedRepr<f32>, IxDyn> = npz.by_name(&name)
             .map_err(|e| format!("Failed to read voice {}: {:?}", name, e))?;
 
-        // The voice data is shape (510, 1, 256) - we take the first style variation (index 0)
-        // Each voice has 510 style variations, we'll use the first one by default
+        // The voice data is shape (510, 1, 256) - we load all 510 style variations
+        // Each voice has 510 style variations for different token counts
         let shape = arr.shape();
         if shape.len() == 3 && shape[1] == 1 && shape[2] == 256 {
-            // Extract just the first style (256 floats)
-            let start = 0;
-            let end = 256;
-            let data = arr.as_slice()
-                .ok_or_else(|| format!("Failed to get slice for voice {}", name))?[start..end]
-                .to_vec();
-            voices.insert(name.trim_end_matches(".npy").to_string(), data);
+            let num_styles = shape[0];
+            let style_size = 256;
+            let arr_slice = arr.as_slice()
+                .ok_or_else(|| format!("Failed to get slice for voice {}", name))?;
+            
+            // Extract all styles
+            let mut styles = Vec::new();
+            for i in 0..num_styles {
+                let start = i * style_size;
+                let end = start + style_size;
+                let style_data = arr_slice[start..end].to_vec();
+                styles.push(style_data);
+            }
+            
+            voices.insert(name.trim_end_matches(".npy").to_string(), styles);
         }
     }
 

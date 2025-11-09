@@ -71,5 +71,8 @@ name = "test_alerts"
 [[example]]
 name = "audio_formats"
 
+[[example]]
+name = "test_voice_styles"
+
 [dev-dependencies]
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros"] }
