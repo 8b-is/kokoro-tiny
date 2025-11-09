@@ -38,6 +38,7 @@ use regex::{Regex, Captures};
 
 #[cfg(feature = "playback")]
 use rodio::{Decoder, OutputStream, Sink, Source};
+#[cfg(feature = "playback")]
 use std::io::Cursor;
 
 // Constants
@@ -261,6 +262,7 @@ impl TtsEngine {
     }
 
     /// Convert audio to WAV bytes (for playback)
+    #[cfg(feature = "playback")]
     pub(crate) fn to_wav_bytes(&self, audio: &[f32]) -> Result<Vec<u8>, String> {
         let mut buffer = Vec::new();
         let spec = hound::WavSpec {
