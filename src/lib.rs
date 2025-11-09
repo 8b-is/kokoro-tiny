@@ -21,6 +21,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ use ort::{
     session::{builder::GraphOptimizationLevel, Session, SessionInputs, SessionInputValue},
     value::{Tensor, Value},
 };
+use regex::{Regex, Captures};
 
 #[cfg(feature = "playback")]
 use rodio::{Decoder, OutputStream, Sink, Source};
@@ -46,6 +48,36 @@ const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0;
 // Pad token used to mark sequence boundaries (must be present in vocabulary)
 const PAD: char = '$';
+
+/// Initializes espeak-ng, searching for the data directory.
+pub fn initialize_phonemizer() -> Result<(), String> {
+    // Check if the data path is already set via environment variable
+    if env::var("PIPER_ESPEAKNG_DATA_DIRECTORY").is_ok() {
+        return Ok(());
+    }
+
+    // Search for the data directory relative to the executable
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Path for development build
+            let dev_path = exe_dir.join("espeak-ng-data");
+            if dev_path.exists() {
+                env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", exe_dir.to_str().unwrap());
+                return Ok(());
+            }
+
+            // Path for release build (often in target/release)
+            let release_path = exe_dir.parent().unwrap().join("espeak-ng-data");
+            if release_path.exists() {
+                env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", release_path.parent().unwrap().to_str().unwrap());
+                return Ok(());
+            }
+        }
+    }
+
+    Err("Could not find espeak-ng-data directory. Please set the PIPER_ESPEAKNG_DATA_DIRECTORY environment variable.".to_string())
+}
+
 
 // Get cache directory for shared model storage (Hue's suggestion!)
 fn get_cache_dir() -> PathBuf {
@@ -120,9 +152,45 @@ impl TtsEngine {
         })
     }
 
+    /// Process long text by splitting it into sentences and synthesizing them.
+    /// This is ideal for reading entire books or long documents.
+    pub fn process_long_text(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<Vec<f32>, String> {
+        // Regex to split text by sentences and commas, keeping the delimiter
+        let re = Regex::new(r"([^,!?.]+[!?.,]*)").unwrap();
+        let mut full_audio = Vec::new();
+        let speed_val = speed.unwrap_or(1.0);
+
+        for cap in re.captures_iter(text) {
+            let chunk = &cap[1];
+            if chunk.trim().is_empty() {
+                continue;
+            }
+
+            // Synthesize each chunk
+            let audio_chunk = self.synthesize(chunk, voice, Some(speed_val))?;
+            full_audio.extend(audio_chunk);
+
+            // Add a pause based on the ending punctuation
+            let last_char = chunk.trim().chars().last();
+            let pause_ms = match last_char {
+                Some('.') | Some('!') | Some('?') => 250, // Longer pause for sentence end
+                Some(',') => 125,                         // Shorter pause for comma
+                _ => 0,
+            };
+
+            if pause_ms > 0 {
+                let pause_samples = (SAMPLE_RATE as f32 * (pause_ms as f32 / 1000.0)) as usize;
+                full_audio.extend(vec![0.0; pause_samples]);
+            }
+        }
+
+        Ok(full_audio)
+    }
+
     /// Synthesize speech from text
-    pub fn synthesize(&mut self, text: &str, voice: Option<&str>) -> Result<Vec<f32>, String> {
+    pub fn synthesize(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<Vec<f32>, String> {
         let voice = voice.unwrap_or(DEFAULT_VOICE);
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
 
         // Get voice style
         let style = self.voices.get(voice)
@@ -143,7 +211,7 @@ impl TtsEngine {
         let tokens = self.tokenize(&phonemes_str);
 
         // Run inference
-        let audio = self.infer(tokens, style, DEFAULT_SPEED)?;
+        let audio = self.infer(tokens, style, speed_val)?;
 
         Ok(audio)
     }
@@ -154,7 +222,8 @@ impl TtsEngine {
         // Convert audio to WAV format in memory
         let wav_data = self.to_wav_bytes(audio)?;
 
-        // Setup audio output
+        // Setup audio output stream.
+        // NOTE: The stream must be kept alive for the duration of playback.
         let (_stream, stream_handle) = OutputStream::try_default()
             .map_err(|e| format!("Failed to get audio output: {}", e))?;
 
@@ -171,6 +240,9 @@ impl TtsEngine {
 
         // Play the audio
         sink.append(source);
+
+        // The sink is detached here and will play in the background.
+        // We need to sleep until the sink is empty to prevent the program from exiting early.
         sink.sleep_until_end();
 
         Ok(())

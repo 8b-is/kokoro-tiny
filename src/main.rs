@@ -2,7 +2,7 @@
 //! Perfect for smart-tree integration and system notifications!
 
 use clap::{Parser, Subcommand};
-use kokoro_tiny::TtsEngine;
+use kokoro_tiny::{TtsEngine, initialize_phonemizer};
 use std::io::{self, BufRead};
 
 #[derive(Parser)]
@@ -15,6 +15,10 @@ struct Cli {
     /// Volume level (0.0 to 1.0)
     #[arg(short, long, default_value = "0.8")]
     volume: f32,
+
+    /// Speech speed (0.5 to 2.0)
+    #[arg(short, long, default_value = "1.0")]
+    speed: f32,
 
     /// Voice to use
     #[arg(short = 'V', long, default_value = "af_sky")]
@@ -34,7 +38,7 @@ enum Commands {
     /// Speak text directly
     Say {
         /// Text to speak
-        text: String,
+        text: Vec<String>,
     },
 
     /// Read from stdin (perfect for piped input)
@@ -101,6 +105,11 @@ impl AlertType {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize the phonemizer to find the espeak-ng data
+    if let Err(e) = initialize_phonemizer() {
+        eprintln!("Warning: {}", e);
+    }
+
     // Setup tokio runtime for async operations
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -123,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get text to speak based on command
     let (text, voice) = match cli.command {
         Some(Commands::Say { text }) => {
-            (text, cli.voice)
+            (text.join(" "), cli.voice)
         }
 
         Some(Commands::Pipe) => {
@@ -170,7 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Synthesize speech
-    let audio = engine.synthesize(&text, Some(&voice))
+    let audio = engine.process_long_text(&text, Some(&voice), Some(cli.speed))
         .map_err(|e| format!("Synthesis failed: {}", e))?;
 
     // Output to file or play
@@ -181,14 +190,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         #[cfg(feature = "playback")]
         {
-            println!("🔊 Speaking: \"{}\" [voice: {}, volume: {}]",
+            println!("🔊 Speaking: \"{}\" [voice: {}, volume: {}, speed: {}]",
                 if text.len() > 50 {
                     format!("{}...", &text[..50])
                 } else {
                     text.clone()
                 },
                 voice,
-                cli.volume
+                cli.volume,
+                cli.speed
             );
             engine.play(&audio, cli.volume)
                 .map_err(|e| format!("Playback failed: {}", e))?;
