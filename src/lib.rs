@@ -325,8 +325,21 @@ impl TtsEngine {
                     full_audio.extend(vec![0.0; pause_samples]);
                 }
                 
-                // Start new chunk with current sentence
-                current_chunk = sentence.to_string();
+                // Check if the sentence itself exceeds MAX_TOKENS
+                let sentence_phonemes = text_to_phonemes(sentence, "en", None, true, false)
+                    .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
+                let sentence_phonemes_str = format!("{}{}{}", PAD, sentence_phonemes.join(""), PAD);
+                let sentence_tokens = self.tokenize(&sentence_phonemes_str);
+                
+                if !sentence_tokens.is_empty() && sentence_tokens[0].len() > MAX_TOKENS {
+                    // Even single sentence exceeds limit, split by words
+                    let sentence_audio = self.synthesize_by_words(sentence, voice, Some(speed_val))?;
+                    full_audio.extend(sentence_audio);
+                    current_chunk = String::new();
+                } else {
+                    // Start new chunk with current sentence
+                    current_chunk = sentence.to_string();
+                }
             } else {
                 // Add sentence to current chunk
                 current_chunk = test_chunk;
@@ -335,8 +348,20 @@ impl TtsEngine {
 
         // Synthesize remaining chunk
         if !current_chunk.is_empty() {
-            let chunk_audio = self.synthesize_direct(&current_chunk, voice, speed_val)?;
-            full_audio.extend(chunk_audio);
+            // Check if remaining chunk exceeds limit
+            let phonemes = text_to_phonemes(&current_chunk, "en", None, true, false)
+                .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
+            let phonemes_str = format!("{}{}{}", PAD, phonemes.join(""), PAD);
+            let tokens = self.tokenize(&phonemes_str);
+            
+            if !tokens.is_empty() && tokens[0].len() > MAX_TOKENS {
+                // Last chunk exceeds limit, split by words
+                let chunk_audio = self.synthesize_by_words(&current_chunk, voice, Some(speed_val))?;
+                full_audio.extend(chunk_audio);
+            } else {
+                let chunk_audio = self.synthesize_direct(&current_chunk, voice, speed_val)?;
+                full_audio.extend(chunk_audio);
+            }
         }
 
         // Fallback: if no chunks were processed, try splitting by words
@@ -379,7 +404,33 @@ impl TtsEngine {
                     full_audio.extend(vec![0.0; pause_samples]);
                 }
                 
-                current_chunk = word.to_string();
+                // Check if the single word itself exceeds MAX_TOKENS
+                let word_phonemes = text_to_phonemes(word, "en", None, true, false)
+                    .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
+                let word_phonemes_str = format!("{}{}{}", PAD, word_phonemes.join(""), PAD);
+                let word_tokens = self.tokenize(&word_phonemes_str);
+                
+                if !word_tokens.is_empty() && word_tokens[0].len() > MAX_TOKENS {
+                    // Single word exceeds limit - truncate it (best effort)
+                    // This is rare but can happen with very long compound words
+                    eprintln!("Warning: Word '{}' exceeds token limit, truncating", word);
+                    let truncated_phonemes_str = word_phonemes_str.chars().take(MAX_TOKENS).collect::<String>();
+                    let truncated_tokens = self.tokenize(&truncated_phonemes_str);
+                    
+                    if !truncated_tokens.is_empty() && !truncated_tokens[0].is_empty() {
+                        let voice_styles = self.voices.get(voice)
+                            .ok_or_else(|| format!("Voice '{}' not found", voice))?;
+                        let token_count = truncated_tokens[0].len();
+                        let style_index = token_count.min(voice_styles.len() - 1);
+                        let style = voice_styles[style_index].clone();
+                        
+                        let word_audio = self.infer(truncated_tokens, style, speed_val)?;
+                        full_audio.extend(word_audio);
+                    }
+                    current_chunk = String::new();
+                } else {
+                    current_chunk = word.to_string();
+                }
             } else {
                 current_chunk = test_chunk;
             }
