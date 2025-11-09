@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🎵 Synthesizing: \"{}\"", text);
 
     // Generate speech with default voice
-    let audio = tts.synthesize(text, None)?;
+    let audio = tts.synthesize(text, None, None)?;
 
     println!("✅ Generated {} audio samples", audio.len());
 

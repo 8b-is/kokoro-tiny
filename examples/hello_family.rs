@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📝 Message: \"{}\"", message);
 
     // Generate speech with the Heart voice (af_heart)
-    let audio = tts.synthesize(message, Some("af_heart"))
+    let audio = tts.synthesize(message, Some("af_heart"), None)
         .map_err(|e| format!("Speech synthesis hiccup: {}", e))?;
 
     println!("✅ Generated {} audio samples!", audio.len());

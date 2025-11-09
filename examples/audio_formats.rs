@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Generate audio
         let start = Instant::now();
-        let audio = tts.synthesize(text, Some(voice))?;
+        let audio = tts.synthesize(text, Some(voice), None)?;
         let synthesis_time = start.elapsed();
 
         println!("⚡ Synthesis: {:.2}ms ({} samples)",
@@ -115,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Multi-format save test using save_audio()
     println!("🔄 Testing automatic format detection:");
-    let test_audio = tts.synthesize("Format auto-detection test!", Some("af_heart"))?;
+    let test_audio = tts.synthesize("Format auto-detection test!", Some("af_heart"), None)?;
 
     let auto_files = vec![
         "auto_test.wav",

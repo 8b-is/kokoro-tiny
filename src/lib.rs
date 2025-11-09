@@ -13,7 +13,7 @@
 //!     let mut tts = TtsEngine::new().await.unwrap();
 //!
 //!     // Generate speech
-//!     let audio = tts.synthesize("Hello world!", None).unwrap();
+//!     let audio = tts.synthesize("Hello world!", None, None).unwrap();
 //!
 //!     // Save to file
 //!     tts.save_wav("output.wav", &audio).unwrap();
