@@ -48,7 +48,7 @@ audiopus = { version = "0.2", optional = true }
 flac = { version = "0.3.0", optional = true }
 
 [features]
-default = ["playback"]
+default = []
 mp3 = ["mp3lame-encoder"]
 cuda = ["ort/cuda"]
 playback = ["cpal", "rodio"]
