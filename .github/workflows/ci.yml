@@ -23,7 +23,7 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
       - name: Run tests (default features)
-        run: cargo test --locked
+        run: cargo test
 
   playback-test:
     name: Playback tests (optional)
