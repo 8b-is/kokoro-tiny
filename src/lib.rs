@@ -34,12 +34,12 @@ use ort::{
     session::{builder::GraphOptimizationLevel, Session, SessionInputs, SessionInputValue},
     value::{Tensor, Value},
 };
-use regex::{Regex, Captures};
+use regex::Regex;
+use unicode_normalization::UnicodeNormalization;
+use std::io::Cursor;
 
 #[cfg(feature = "playback")]
 use rodio::{Decoder, OutputStream, Sink};
-#[cfg(feature = "playback")]
-use std::io::Cursor;
 
 // Constants
 const MODEL_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
@@ -151,26 +151,105 @@ impl TtsEngine {
         })
     }
 
+    /// Normalize and sanitize text for better TTS processing.
+    /// Handles unicode normalization, removes unsupported characters gracefully.
+    fn normalize_text(&self, text: &str) -> String {
+        // Apply unicode normalization (NFC - Canonical Decomposition followed by Canonical Composition)
+        let normalized: String = text.nfc().collect();
+
+        // Replace common unicode characters that might not be in vocab
+        let sanitized = normalized
+            .replace('\u{2018}', "'")  // Left single quote to regular
+            .replace('\u{2019}', "'")  // Right single quote to regular
+            .replace('\u{201C}', "\"") // Left double quote
+            .replace('\u{201D}', "\"") // Right double quote
+            .replace('\u{2013}', "-")  // En dash to hyphen
+            .replace('\u{2014}', "-")  // Em dash to hyphen
+            .replace('\u{2026}', "...") // Ellipsis to three dots
+            .replace('\t', " ")  // Tab to space
+            .replace('\r', " ")  // Carriage return to space
+            .replace('\n', " "); // Newline to space
+
+        // Collapse multiple spaces
+        let re = Regex::new(r"\s+").unwrap();
+        re.replace_all(&sanitized, " ").trim().to_string()
+    }
+
+    /// Validate text and return warnings for potential issues
+    fn validate_text(&self, text: &str) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if text.is_empty() {
+            warnings.push("Empty text provided".to_string());
+        }
+
+        if text.len() > 10000 {
+            warnings.push(format!("Very long text ({} chars) may take a while to process", text.len()));
+        }
+
+        // Check for characters not in vocabulary
+        let normalized = self.normalize_text(text);
+        let phonemes_result = text_to_phonemes(&normalized, "en", None, true, false);
+
+        if let Ok(phonemes) = phonemes_result {
+            let phonemes_str = phonemes.join("");
+            let unknown_chars: Vec<char> = phonemes_str
+                .chars()
+                .filter(|c| !self.vocab.contains_key(c))
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            if !unknown_chars.is_empty() {
+                warnings.push(format!(
+                    "Some characters may not be pronounced: {:?}",
+                    unknown_chars.iter().take(5).collect::<Vec<_>>()
+                ));
+            }
+        }
+
+        warnings
+    }
+
     /// Process long text by splitting it into sentences and synthesizing them.
     /// This is ideal for reading entire books or long documents.
     pub fn process_long_text(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<Vec<f32>, String> {
+        // Normalize the text first
+        let normalized = self.normalize_text(text);
+
+        // Return empty audio for empty text
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // For very short text (< 50 chars), use direct synthesis for consistency
+        if normalized.len() < 50 {
+            return self.synthesize(&normalized, voice, speed);
+        }
+
         // Regex to split text by sentences and commas, keeping the delimiter
         let re = Regex::new(r"([^,!?.]+[!?.,]*)").unwrap();
         let mut full_audio = Vec::new();
-        let speed_val = speed.unwrap_or(1.0);
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
 
-        for cap in re.captures_iter(text) {
+        let mut has_content = false;
+
+        for cap in re.captures_iter(&normalized) {
             let chunk = &cap[1];
-            if chunk.trim().is_empty() {
+            let trimmed = chunk.trim();
+
+            if trimmed.is_empty() {
                 continue;
             }
 
+            has_content = true;
+
             // Synthesize each chunk
-            let audio_chunk = self.synthesize(chunk, voice, Some(speed_val))?;
+            let audio_chunk = self.synthesize(trimmed, voice, Some(speed_val))?;
             full_audio.extend(audio_chunk);
 
             // Add a pause based on the ending punctuation
-            let last_char = chunk.trim().chars().last();
+            let last_char = trimmed.chars().last();
             let pause_ms = match last_char {
                 Some('.') | Some('!') | Some('?') => 250, // Longer pause for sentence end
                 Some(',') => 125,                         // Shorter pause for comma
@@ -183,11 +262,32 @@ impl TtsEngine {
             }
         }
 
+        // If no chunks matched (shouldn't happen with normalized text), synthesize directly
+        if !has_content {
+            return self.synthesize(&normalized, voice, speed);
+        }
+
         Ok(full_audio)
+    }
+
+    /// Synthesize speech from text with validation warnings.
+    /// Returns both the audio and any warnings about the text.
+    pub fn synthesize_with_warnings(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<(Vec<f32>, Vec<String>), String> {
+        let warnings = self.validate_text(text);
+        let audio = self.synthesize(text, voice, speed)?;
+        Ok((audio, warnings))
     }
 
     /// Synthesize speech from text
     pub fn synthesize(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<Vec<f32>, String> {
+        // Normalize text first
+        let normalized = self.normalize_text(text);
+
+        // Return empty audio for empty text
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let voice = voice.unwrap_or(DEFAULT_VOICE);
         let speed_val = speed.unwrap_or(DEFAULT_SPEED);
 
@@ -198,14 +298,24 @@ impl TtsEngine {
 
         // Convert text to phonemes
         // Parameters: text, language, voice variant (None for default), preserve punctuation, with_stress
-        let phonemes = text_to_phonemes(text, "en", None, true, false)
+        let phonemes = text_to_phonemes(&normalized, "en", None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
 
         // Join phonemes into a single string
         let phonemes_str = phonemes.join("");
 
+        // Check if we have any valid phonemes
+        if phonemes_str.is_empty() {
+            return Err("Text produced no valid phonemes".to_string());
+        }
+
         // Tokenize phonemes using proper vocabulary
         let tokens = self.tokenize(&phonemes_str);
+
+        // Check if we have any valid tokens
+        if tokens.is_empty() || tokens[0].is_empty() {
+            return Err("Text produced no valid tokens for synthesis".to_string());
+        }
 
         // Run inference
         let audio = self.infer(tokens, style, speed_val)?;

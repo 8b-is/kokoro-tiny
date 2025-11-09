@@ -16,6 +16,9 @@ Minimal, blazing-fast TTS (Text-to-Speech) crate powered by the Kokoro model (82
 - 📁 **Multiple formats**: WAV, MP3, OPUS, FLAC
 - 💾 **Smart caching** - downloads model once to `~/.cache/kokoros`
 - 🛠️ **CLI included** - `kokoro-speak` for instant TTS
+- 🌍 **Unicode normalization** - handles smart quotes, special characters
+- 📏 **Consistent speed** - works reliably for both small alerts and long text
+- ✅ **Text validation** - warnings for potential synthesis issues
 
 ## Quick Start
 
@@ -50,6 +53,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+```
+
+### Advanced Features
+
+**Unicode & Special Characters**
+```rust
+// Automatically handles smart quotes, dashes, and special characters
+let audio = tts.synthesize(""Hello—world…"", None, None)?;
+// Normalized to: "Hello-world..."
+```
+
+**Text Validation**
+```rust
+// Get warnings about potential issues
+let (audio, warnings) = tts.synthesize_with_warnings(
+    "Text with ümlauts and émojis 🎉",
+    None,
+    None
+)?;
+
+for warning in warnings {
+    println!("⚠️  {}", warning);
+}
+```
+
+**Consistent Speed for All Text Lengths**
+```rust
+// Small alerts and long text use the same speed value consistently
+tts.synthesize("Error!", None, Some(1.5))?;  // Fast alert
+tts.synthesize("Long detailed message...", None, Some(1.5))?;  // Same speed
 ```
 
 ### Voice Mixing
@@ -129,6 +162,9 @@ cargo run --example simple
 
 # Test all voices
 cargo run --example test_voices
+
+# Test alert improvements (unicode, speed, validation)
+cargo run --example test_alerts --no-default-features
 
 # Audio format comparison
 cargo run --features all-formats --example audio_formats
