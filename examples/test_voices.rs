@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (filename, message) in test_messages {
         println!("Testing: \"{}\"", message);
 
-        let audio = tts.synthesize(message, Some("af_heart"))
+        let audio = tts.synthesize(message, Some("af_heart"), None)
             .map_err(|e| format!("Synthesis failed: {}", e))?;
 
         let output_file = format!("{}.wav", filename);
