@@ -12,6 +12,7 @@ Minimal, blazing-fast TTS (Text-to-Speech) crate powered by the Kokoro model (82
 
 - ⚡ **Extremely fast inference** using ONNX Runtime
 - 🎨 **50+ built-in voices** with style mixing support
+- 🎯 **Smart style selection** - automatically selects voice style based on text length
 - 🔊 **Direct audio playback** with volume control
 - 📁 **Multiple formats**: WAV, MP3, OPUS, FLAC
 - 💾 **Smart caching** - downloads model once to `~/.cache/kokoros`
@@ -19,6 +20,7 @@ Minimal, blazing-fast TTS (Text-to-Speech) crate powered by the Kokoro model (82
 - 🌍 **Unicode normalization** - handles smart quotes, special characters
 - 📏 **Consistent speed** - works reliably for both small alerts and long text
 - ✅ **Text validation** - warnings for potential synthesis issues
+- 🔄 **Auto-splitting** - handles very long text by respecting 512 token limit
 
 ## Quick Start
 
@@ -56,6 +58,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ### Advanced Features
+
+**Smart Style Selection**
+```rust
+// Voice style is automatically selected based on text length
+// Short text uses styles optimized for few tokens
+let audio = tts.synthesize("Hello!", None, None)?;
+
+// Longer text uses styles optimized for more tokens
+let audio = tts.synthesize("This is a longer sentence with more words.", None, None)?;
+
+// Very long text is automatically split to respect 512 token limit
+let long_text = "..."; // Very long text
+let audio = tts.synthesize(long_text, None, None)?; // Automatically handled!
+```
 
 **Unicode & Special Characters**
 ```rust
