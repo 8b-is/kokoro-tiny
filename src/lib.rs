@@ -238,7 +238,9 @@ impl TtsEngine {
         if text.len() > 50 {
             eprintln!("   Text length: {} chars", text.len());
             eprintln!("   Phonemes array: {} entries", phonemes.len());
-            eprintln!("   Phoneme text: '{}'", &phonemes_text[..50.min(phonemes_text.len())]);
+            // Use char-based truncation for UTF-8 safety
+            let preview: String = phonemes_text.chars().take(50).collect();
+            eprintln!("   Phoneme text: '{}'", preview);
             eprintln!("   Phoneme text length: {} chars", phonemes_text.len());
         }
 
