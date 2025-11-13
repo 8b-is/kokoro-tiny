@@ -25,8 +25,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
 use espeak_rs::text_to_phonemes;
 
@@ -41,7 +41,7 @@ pub mod mem8_voice;
 use ndarray::{ArrayBase, IxDyn, OwnedRepr};
 use ndarray_npy::NpzReader;
 use ort::{
-    session::{builder::GraphOptimizationLevel, Session, SessionInputs, SessionInputValue},
+    session::{builder::GraphOptimizationLevel, Session, SessionInputValue, SessionInputs},
     value::{Tensor, Value},
 };
 
@@ -59,6 +59,11 @@ const VOICES_URL: &str = "https://i1.is/k/0.bin";
 const SAMPLE_RATE: u32 = 24000;
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0;
+const LONG_TEXT_THRESHOLD: usize = 120;
+const MAX_CHARS_PER_CHUNK: usize = 180;
+const CHUNK_CROSSFADE_MS: usize = 45;
+const MIN_ENGINE_SPEED: f32 = 0.35;
+const MAX_ENGINE_SPEED: f32 = 2.2;
 
 // Fallback audio message - "Excuse me, I lost my voice. Give me time to get it back."
 // This is a pre-generated minimal WAV file that can play while downloading
@@ -76,6 +81,8 @@ pub struct TtsEngine {
     voices: HashMap<String, Vec<f32>>,
     vocab: HashMap<char, i64>,
     fallback_mode: bool,
+    #[cfg(feature = "playback")]
+    audio_device: Option<String>, // Selected audio device name
 }
 
 /// Baby speech mode for mem8 - handles simple utterances
@@ -97,8 +104,9 @@ impl TtsEngine {
 
         Self::with_paths(
             model_path.to_str().unwrap_or("0.onnx"),
-            voices_path.to_str().unwrap_or("0.bin")
-        ).await
+            voices_path.to_str().unwrap_or("0.bin"),
+        )
+        .await
     }
 
     /// Create a new TTS engine with custom model paths
@@ -157,13 +165,15 @@ impl TtsEngine {
                     voices: HashMap::new(),
                     vocab: build_vocab(),
                     fallback_mode: true,
+                    #[cfg(feature = "playback")]
+                    audio_device: None,
                 });
             }
         }
 
         // Load ONNX model
-        let model_bytes = std::fs::read(model_path)
-            .map_err(|e| format!("Failed to read model file: {}", e))?;
+        let model_bytes =
+            std::fs::read(model_path).map_err(|e| format!("Failed to read model file: {}", e))?;
         let session = Session::builder()
             .map_err(|e| format!("Failed to create session builder: {}", e))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -179,6 +189,8 @@ impl TtsEngine {
             voices,
             vocab: build_vocab(),
             fallback_mode: false,
+            #[cfg(feature = "playback")]
+            audio_device: None,
         })
     }
 
@@ -191,6 +203,52 @@ impl TtsEngine {
         }
     }
 
+    /// List all available audio output devices (requires 'playback' feature)
+    #[cfg(feature = "playback")]
+    pub fn list_audio_devices(&self) -> Result<Vec<String>, String> {
+        use cpal::traits::{DeviceTrait, HostTrait};
+
+        let host = cpal::default_host();
+        let devices = host
+            .output_devices()
+            .map_err(|e| format!("Failed to get output devices: {}", e))?;
+
+        let mut device_names = Vec::new();
+        for device in devices {
+            if let Ok(name) = device.name() {
+                device_names.push(name);
+            }
+        }
+
+        Ok(device_names)
+    }
+
+    /// Set the audio output device by name (requires 'playback' feature)
+    /// Pass None to use system default
+    #[cfg(feature = "playback")]
+    pub fn set_audio_device(&mut self, device_name: Option<String>) -> Result<(), String> {
+        // Verify the device exists if a name was provided
+        if let Some(ref name) = device_name {
+            let available = self.list_audio_devices()?;
+            if !available.contains(name) {
+                return Err(format!(
+                    "Device '{}' not found. Available devices: {}",
+                    name,
+                    available.join(", ")
+                ));
+            }
+        }
+
+        self.audio_device = device_name;
+        Ok(())
+    }
+
+    /// Get the currently selected audio device (requires 'playback' feature)
+    #[cfg(feature = "playback")]
+    pub fn get_audio_device(&self) -> Option<&str> {
+        self.audio_device.as_deref()
+    }
+
     /// Synthesize text to speech
     pub fn synthesize(&mut self, text: &str, voice: Option<&str>) -> Result<Vec<f32>, String> {
         self.synthesize_with_speed(text, voice, DEFAULT_SPEED)
@@ -198,35 +256,103 @@ impl TtsEngine {
 
     /// Synthesize text to speech with custom speed
     /// Speed: 0.5 = half speed (slower), 1.0 = normal, 2.0 = double speed (faster)
-    pub fn synthesize_with_speed(&mut self, text: &str, voice: Option<&str>, speed: f32) -> Result<Vec<f32>, String> {
+    pub fn synthesize_with_speed(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: f32,
+    ) -> Result<Vec<f32>, String> {
         self.synthesize_with_options(text, voice, speed, 1.0)
     }
 
     /// Synthesize text to speech with full options
     /// Speed: 0.5 = half speed (slower), 1.0 = normal, 2.0 = double speed (faster)
     /// Gain: 0.5 = quieter, 1.0 = normal, 2.0 = twice as loud (with soft clipping)
-    pub fn synthesize_with_options(&mut self, text: &str, voice: Option<&str>, speed: f32, gain: f32) -> Result<Vec<f32>, String> {
+    pub fn synthesize_with_options(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: f32,
+        gain: f32,
+    ) -> Result<Vec<f32>, String> {
         // If in fallback mode, return the excuse message audio
         if self.fallback_mode {
             println!("🎤 Playing fallback message while downloading voice model...");
             return Ok(wav_to_f32(FALLBACK_MESSAGE)?);
         }
 
-        // Warn about text length limitations
-        if text.len() > 80 {
-            eprintln!("⚠️  Text longer than 80 chars may have words compressed or dropped.");
-            eprintln!("   For best results, use shorter sentences.");
-        }
-
-        // Process the text directly - chunking causes speed inconsistencies
-        let session = self.session.as_ref()
+        let session = self
+            .session
+            .as_ref()
             .ok_or_else(|| "TTS engine not initialized".to_string())?;
 
+        let clamped_speed = speed.clamp(MIN_ENGINE_SPEED, MAX_ENGINE_SPEED);
         let voice = voice.unwrap_or(DEFAULT_VOICE);
 
         // Parse voice style (e.g., "af_sky.8+af_bella.2" for mixing)
         let style = self.parse_voice_style(voice)?;
 
+        // Short form: synthesize in one pass for predictable cadence
+        if !needs_chunking(text) {
+            let mut audio = self.synthesize_segment(session, &style, text, clamped_speed)?;
+            if gain != 1.0 {
+                audio = amplify_audio(&audio, gain);
+            }
+            return Ok(audio);
+        }
+
+        // Long-form synthesis path - chunk the text while preserving pacing
+        let prepared_chunks: Vec<String> = split_text_for_tts(text, MAX_CHARS_PER_CHUNK)
+            .into_iter()
+            .filter(|chunk| !chunk.trim().is_empty())
+            .collect();
+
+        if prepared_chunks.is_empty() {
+            return Err("No text provided for synthesis".to_string());
+        }
+
+        let chunk_count = prepared_chunks.len();
+        eprintln!(
+            "📚 Long-form synthesis enabled: {} chars -> {} chunk(s) (≤ {} chars each)",
+            text.chars().count(),
+            chunk_count,
+            MAX_CHARS_PER_CHUNK
+        );
+
+        let overlap = chunk_crossfade_samples();
+        let mut combined_audio = Vec::new();
+
+        for (idx, chunk) in prepared_chunks.iter().enumerate() {
+            eprintln!(
+                "   → Chunk {}/{} ({} chars)",
+                idx + 1,
+                chunk_count,
+                chunk.chars().count()
+            );
+
+            let chunk_audio = self.synthesize_segment(session, &style, chunk, clamped_speed)?;
+            append_with_crossfade(&mut combined_audio, &chunk_audio, overlap);
+        }
+
+        if combined_audio.is_empty() {
+            return Err("Failed to synthesize combined audio".to_string());
+        }
+
+        let mut final_audio = combined_audio;
+        if gain != 1.0 {
+            final_audio = amplify_audio(&final_audio, gain);
+        }
+
+        Ok(final_audio)
+    }
+
+    fn synthesize_segment(
+        &self,
+        session: &Arc<Mutex<Session>>,
+        style: &[f32],
+        text: &str,
+        speed: f32,
+    ) -> Result<Vec<f32>, String> {
         // Convert text to phonemes
         let phonemes = text_to_phonemes(text, "en", None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {}", e))?;
@@ -234,28 +360,20 @@ impl TtsEngine {
         // Join phonemes and tokenize
         let phonemes_text = phonemes.join(" ");
 
-        // Debug: show phoneme and token counts
+        // Debug: show phoneme and token counts for larger segments
         if text.len() > 50 {
             eprintln!("   Text length: {} chars", text.len());
             eprintln!("   Phonemes array: {} entries", phonemes.len());
             // Use char-based truncation for UTF-8 safety
             let preview: String = phonemes_text.chars().take(50).collect();
-            eprintln!("   Phoneme text: '{}'", preview);
+            eprintln!("   Phoneme text preview: '{}'", preview);
             eprintln!("   Phoneme text length: {} chars", phonemes_text.len());
         }
 
         let tokens = self.tokenize(phonemes_text);
 
         // Run inference with user-specified speed directly
-        // The model expects speed values around 1.0 for normal speech
-        let mut audio = self.run_inference(session, tokens, style, speed)?;
-
-        // Apply gain/amplification if requested
-        if gain != 1.0 {
-            audio = amplify_audio(&audio, gain);
-        }
-
-        Ok(audio)
+        self.run_inference(session, tokens, style.to_vec(), speed)
     }
 
     /// Save audio as WAV file
@@ -272,11 +390,13 @@ impl TtsEngine {
 
         for &sample in audio {
             let sample_i16 = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-            writer.write_sample(sample_i16)
+            writer
+                .write_sample(sample_i16)
                 .map_err(|e| format!("Failed to write sample: {}", e))?;
         }
 
-        writer.finalize()
+        writer
+            .finalize()
             .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
         Ok(())
     }
@@ -297,11 +417,13 @@ impl TtsEngine {
 
             for &sample in audio {
                 let sample_i16 = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                writer.write_sample(sample_i16)
+                writer
+                    .write_sample(sample_i16)
                     .map_err(|e| format!("Failed to write sample: {}", e))?;
             }
 
-            writer.finalize()
+            writer
+                .finalize()
                 .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
         }
 
@@ -325,7 +447,8 @@ impl TtsEngine {
             .map_err(|e| format!("Failed to build MP3 encoder: {:?}", e))?;
 
         // Convert to i16
-        let samples_i16: Vec<i16> = audio.iter()
+        let samples_i16: Vec<i16> = audio
+            .iter()
             .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
             .collect();
 
@@ -333,16 +456,17 @@ impl TtsEngine {
         let mut mp3_data = Vec::new();
 
         let mut output = [0u8; 8192];
-        let encoded_size = encoder.encode(pcm, &mut output)
+        let encoded_size = encoder
+            .encode(pcm, &mut output)
             .map_err(|e| format!("Failed to encode MP3: {:?}", e))?;
         mp3_data.extend_from_slice(&output[..encoded_size]);
 
-        let final_size = encoder.flush(&mut output)
+        let final_size = encoder
+            .flush(&mut output)
             .map_err(|e| format!("Failed to flush MP3 encoder: {:?}", e))?;
         mp3_data.extend_from_slice(&output[..final_size]);
 
-        std::fs::write(path, mp3_data)
-            .map_err(|e| format!("Failed to write MP3 file: {}", e))?;
+        std::fs::write(path, mp3_data).map_err(|e| format!("Failed to write MP3 file: {}", e))?;
 
         Ok(())
     }
@@ -350,25 +474,24 @@ impl TtsEngine {
     /// Save audio as OPUS file (requires 'opus-format' feature)
     #[cfg(feature = "opus-format")]
     pub fn save_opus(&self, path: &str, audio: &[f32], bitrate: i32) -> Result<(), String> {
-        use audiopus::{coder::Encoder as OpusEncoder, Channels, Application, Bitrate, SampleRate};
+        use audiopus::{coder::Encoder as OpusEncoder, Application, Bitrate, Channels, SampleRate};
 
         // Convert sample rate from 24000 to 48000 (OPUS prefers 48kHz)
         let samples_48k = resample_audio(audio, SAMPLE_RATE, 48000);
 
         // Convert to i16
-        let samples_i16: Vec<i16> = samples_48k.iter()
+        let samples_i16: Vec<i16> = samples_48k
+            .iter()
             .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
             .collect();
 
         // Create OPUS encoder
-        let mut encoder = OpusEncoder::new(
-            SampleRate::Hz48000,
-            Channels::Mono,
-            Application::Audio
-        ).map_err(|e| format!("Failed to create OPUS encoder: {:?}", e))?;
+        let mut encoder = OpusEncoder::new(SampleRate::Hz48000, Channels::Mono, Application::Audio)
+            .map_err(|e| format!("Failed to create OPUS encoder: {:?}", e))?;
 
         // Set bitrate
-        encoder.set_bitrate(Bitrate::BitsPerSecond(bitrate))
+        encoder
+            .set_bitrate(Bitrate::BitsPerSecond(bitrate))
             .map_err(|e| format!("Failed to set OPUS bitrate: {:?}", e))?;
 
         // Encode in chunks
@@ -378,18 +501,17 @@ impl TtsEngine {
 
         for chunk in samples_i16.chunks(frame_size) {
             if chunk.len() == frame_size {
-                let size = encoder.encode(chunk, &mut output)
+                let size = encoder
+                    .encode(chunk, &mut output)
                     .map_err(|e| format!("Failed to encode OPUS frame: {:?}", e))?;
                 opus_data.extend_from_slice(&output[..size]);
             }
         }
 
-        std::fs::write(path, opus_data)
-            .map_err(|e| format!("Failed to write OPUS file: {}", e))?;
+        std::fs::write(path, opus_data).map_err(|e| format!("Failed to write OPUS file: {}", e))?;
 
         Ok(())
     }
-
 
     /// Save audio file with automatic format detection based on extension
     pub fn save_audio(&self, path: &str, audio: &[f32]) -> Result<(), String> {
@@ -410,7 +532,9 @@ impl TtsEngine {
             #[cfg(feature = "opus-format")]
             "opus" => self.save_opus(path, audio, 24000),
             #[cfg(not(feature = "opus-format"))]
-            "opus" => Err("OPUS support not enabled. Add 'opus-format' feature to Cargo.toml".to_string()),
+            "opus" => {
+                Err("OPUS support not enabled. Add 'opus-format' feature to Cargo.toml".to_string())
+            }
 
             "flac" => Err("FLAC format not yet supported".to_string()),
 
@@ -433,7 +557,13 @@ impl TtsEngine {
     /// * `enable_ducking` - Whether to reduce other audio during playback
     /// * `duck_level` - How much to reduce other audio (0.0 = mute, 1.0 = no change)
     #[cfg(feature = "playback")]
-    pub fn play_with_ducking(&self, audio: &[f32], volume: f32, enable_ducking: bool, duck_level: f32) -> Result<(), String> {
+    pub fn play_with_ducking(
+        &self,
+        audio: &[f32],
+        volume: f32,
+        enable_ducking: bool,
+        duck_level: f32,
+    ) -> Result<(), String> {
         // Duck audio if requested (reduce system volume)
         #[cfg(feature = "ducking")]
         if enable_ducking {
@@ -445,9 +575,34 @@ impl TtsEngine {
         // Convert audio to WAV format in memory
         let wav_data = self.to_wav_bytes(audio)?;
 
-        // Setup audio output
-        let (_stream, stream_handle) = OutputStream::try_default()
-            .map_err(|e| format!("Failed to get audio output: {}", e))?;
+        // Setup audio output - use selected device or default
+        let (_stream, stream_handle) = if let Some(ref device_name) = self.audio_device {
+            // Find and use the specified device
+            use cpal::traits::{DeviceTrait, HostTrait};
+            let host = cpal::default_host();
+            let devices = host
+                .output_devices()
+                .map_err(|e| format!("Failed to get output devices: {}", e))?;
+
+            let mut found_device = None;
+            for device in devices {
+                if let Ok(name) = device.name() {
+                    if name == *device_name {
+                        found_device = Some(device);
+                        break;
+                    }
+                }
+            }
+
+            match found_device {
+                Some(device) => OutputStream::try_from_device(&device)
+                    .map_err(|e| format!("Failed to open device '{}': {}", device_name, e))?,
+                None => return Err(format!("Audio device '{}' not found", device_name)),
+            }
+        } else {
+            // Use system default
+            OutputStream::try_default().map_err(|e| format!("Failed to get audio output: {}", e))?
+        };
 
         let sink = Sink::try_new(&stream_handle)
             .map_err(|e| format!("Failed to create audio sink: {}", e))?;
@@ -457,8 +612,8 @@ impl TtsEngine {
 
         // Create decoder from WAV data
         let cursor = Cursor::new(wav_data);
-        let decoder = Decoder::new(cursor)
-            .map_err(|e| format!("Failed to create audio decoder: {}", e))?;
+        let decoder =
+            Decoder::new(cursor).map_err(|e| format!("Failed to create audio decoder: {}", e))?;
 
         // Play the audio
         sink.append(decoder);
@@ -492,14 +647,17 @@ impl TtsEngine {
                 if pieces.len() != 2 {
                     return Err(format!("Invalid voice format: {}", part));
                 }
-                let weight = pieces[1].parse::<f32>()
+                let weight = pieces[1]
+                    .parse::<f32>()
                     .map_err(|_| format!("Invalid weight: {}", pieces[1]))?;
                 (pieces[0], weight / 10.0)
             } else {
                 (part, 1.0)
             };
 
-            let voice_style = self.voices.get(voice_name)
+            let voice_style = self
+                .voices
+                .get(voice_name)
                 .ok_or_else(|| format!("Voice not found: {}", voice_name))?;
 
             for (i, val) in voice_style.iter().enumerate() {
@@ -523,12 +681,13 @@ impl TtsEngine {
         session: &Arc<Mutex<Session>>,
         tokens: Vec<i64>,
         style: Vec<f32>,
-        speed: f32
+        speed: f32,
     ) -> Result<Vec<f32>, String> {
-        let mut session = session.lock()
+        let mut session = session
+            .lock()
             .map_err(|e| format!("Failed to lock session: {}", e))?;
 
-        let token_count = tokens.len();  // Save count before moving
+        let token_count = tokens.len(); // Save count before moving
 
         // Prepare tokens tensor
         let tokens_array = ndarray::Array2::from_shape_vec((1, tokens.len()), tokens)
@@ -550,13 +709,23 @@ impl TtsEngine {
         // Create inputs
         use std::borrow::Cow;
         let inputs = SessionInputs::from(vec![
-            (Cow::Borrowed("tokens"), SessionInputValue::Owned(Value::from(tokens_tensor))),
-            (Cow::Borrowed("style"), SessionInputValue::Owned(Value::from(style_tensor))),
-            (Cow::Borrowed("speed"), SessionInputValue::Owned(Value::from(speed_tensor))),
+            (
+                Cow::Borrowed("tokens"),
+                SessionInputValue::Owned(Value::from(tokens_tensor)),
+            ),
+            (
+                Cow::Borrowed("style"),
+                SessionInputValue::Owned(Value::from(style_tensor)),
+            ),
+            (
+                Cow::Borrowed("speed"),
+                SessionInputValue::Owned(Value::from(speed_tensor)),
+            ),
         ]);
 
         // Run inference
-        let outputs = session.run(inputs)
+        let outputs = session
+            .run(inputs)
             .map_err(|e| format!("Failed to run inference: {}", e))?;
 
         // Extract audio
@@ -567,7 +736,11 @@ impl TtsEngine {
         // Debug output shape for longer text
         let data_vec = data.to_vec();
         if token_count > 100 {
-            eprintln!("   Output audio shape: {:?}, samples: {}", shape, data_vec.len());
+            eprintln!(
+                "   Output audio shape: {:?}, samples: {}",
+                shape,
+                data_vec.len()
+            );
         }
 
         Ok(data_vec)
@@ -594,16 +767,19 @@ fn build_vocab() -> HashMap<char, i64> {
 
 // Load voices from binary file
 fn load_voices(path: &str) -> Result<HashMap<String, Vec<f32>>, String> {
-    let mut file = File::open(path)
-        .map_err(|e| format!("Failed to open voices file: {}", e))?;
+    let mut file = File::open(path).map_err(|e| format!("Failed to open voices file: {}", e))?;
 
-    let mut reader = NpzReader::new(&mut file)
-        .map_err(|e| format!("Failed to create NPZ reader: {}", e))?;
+    let mut reader =
+        NpzReader::new(&mut file).map_err(|e| format!("Failed to create NPZ reader: {}", e))?;
 
     let mut voices = HashMap::new();
 
-    for name in reader.names().map_err(|e| format!("Failed to read NPZ names: {:?}", e))? {
-        let array: ArrayBase<OwnedRepr<f32>, IxDyn> = reader.by_name(&name)
+    for name in reader
+        .names()
+        .map_err(|e| format!("Failed to read NPZ names: {:?}", e))?
+    {
+        let array: ArrayBase<OwnedRepr<f32>, IxDyn> = reader
+            .by_name(&name)
             .map_err(|e| format!("Failed to read NPZ array {}: {:?}", name, e))?;
         let data: Vec<f32> = array.iter().cloned().collect();
 
@@ -629,10 +805,11 @@ async fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::
 // Convert WAV bytes to f32 samples
 fn wav_to_f32(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     let cursor = Cursor::new(wav_bytes);
-    let mut reader = hound::WavReader::new(cursor)
-        .map_err(|e| format!("Failed to read WAV: {}", e))?;
+    let mut reader =
+        hound::WavReader::new(cursor).map_err(|e| format!("Failed to read WAV: {}", e))?;
 
-    let samples: Result<Vec<f32>, _> = reader.samples::<i16>()
+    let samples: Result<Vec<f32>, _> = reader
+        .samples::<i16>()
         .map(|s| s.map(|sample| sample as f32 / 32768.0))
         .collect();
 
@@ -664,11 +841,46 @@ fn resample_audio(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     output
 }
 
+fn needs_chunking(text: &str) -> bool {
+    text.chars().count() > LONG_TEXT_THRESHOLD || text.lines().count() > 3
+}
+
+fn chunk_crossfade_samples() -> usize {
+    ((SAMPLE_RATE as usize) * CHUNK_CROSSFADE_MS) / 1000
+}
+
+fn append_with_crossfade(buffer: &mut Vec<f32>, next: &[f32], overlap_samples: usize) {
+    if next.is_empty() {
+        return;
+    }
+
+    if buffer.is_empty() || overlap_samples == 0 {
+        buffer.extend_from_slice(next);
+        return;
+    }
+
+    let overlap = overlap_samples.min(buffer.len()).min(next.len());
+    if overlap == 0 {
+        buffer.extend_from_slice(next);
+        return;
+    }
+
+    let start = buffer.len() - overlap;
+    for i in 0..overlap {
+        let fade_in = i as f32 / overlap as f32;
+        let fade_out = 1.0 - fade_in;
+        buffer[start + i] = buffer[start + i] * fade_out + next[i] * fade_in;
+    }
+
+    buffer.extend_from_slice(&next[overlap..]);
+}
+
 // Split text into chunks for better synthesis
 // Kokoro model handles shorter text better without dropping words
 fn split_text_for_tts(text: &str, max_chars: usize) -> Vec<String> {
     // First try to split by sentences
-    let sentences: Vec<&str> = text.split_terminator(&['.', '!', '?'][..])
+    let sentences: Vec<&str> = text
+        .split_terminator(&['.', '!', '?'][..])
         .filter(|s| !s.trim().is_empty())
         .collect();
 
@@ -706,7 +918,9 @@ fn split_text_for_tts(text: &str, max_chars: usize) -> Vec<String> {
             }
         }
         // If adding this sentence would make chunk too long, save current and start new
-        else if !current_chunk.is_empty() && current_chunk.len() + full_sentence.len() + 1 > max_chars {
+        else if !current_chunk.is_empty()
+            && current_chunk.len() + full_sentence.len() + 1 > max_chars
+        {
             chunks.push(current_chunk.trim().to_string());
             current_chunk = full_sentence;
         }
@@ -759,13 +973,16 @@ fn split_by_words(text: &str, max_chars: usize) -> Vec<String> {
 
 // Amplify audio - allows some clipping for maximum loudness
 fn amplify_audio(audio: &[f32], gain: f32) -> Vec<f32> {
-    audio.iter().map(|&sample| {
-        let amplified = sample * gain;
+    audio
+        .iter()
+        .map(|&sample| {
+            let amplified = sample * gain;
 
-        // Simple hard clipping at the limits
-        // This allows maximum volume even if it distorts a bit
-        amplified.clamp(-1.0, 1.0)
-    }).collect()
+            // Simple hard clipping at the limits
+            // This allows maximum volume even if it distorts a bit
+            amplified.clamp(-1.0, 1.0)
+        })
+        .collect()
 }
 
 // BabyTts implementation for mem8 integration
@@ -775,15 +992,20 @@ impl BabyTts {
         let engine = TtsEngine::new().await?;
         Ok(Self {
             engine,
-            max_words: 5,  // Babies start with short phrases
-            voice: "af_sky".to_string(),  // Gentle voice for baby
-            speed: 0.9,  // Slightly slower for clarity
-            gain: 1.8,   // Louder for clarity
+            max_words: 5,                // Babies start with short phrases
+            voice: "af_sky".to_string(), // Gentle voice for baby
+            speed: 0.9,                  // Slightly slower for clarity
+            gain: 1.8,                   // Louder for clarity
         })
     }
 
     /// Create with custom settings
-    pub async fn with_settings(max_words: usize, voice: &str, speed: f32, gain: f32) -> Result<Self, String> {
+    pub async fn with_settings(
+        max_words: usize,
+        voice: &str,
+        speed: f32,
+        gain: f32,
+    ) -> Result<Self, String> {
         let engine = TtsEngine::new().await?;
         Ok(Self {
             engine,
@@ -806,12 +1028,13 @@ impl BabyTts {
         };
 
         // Synthesize with baby settings
-        self.engine.synthesize_with_options(&limited_text, Some(&self.voice), self.speed, self.gain)
+        self.engine
+            .synthesize_with_options(&limited_text, Some(&self.voice), self.speed, self.gain)
     }
 
     /// Get raw audio samples at 24kHz (for mem8 processing)
     pub fn get_audio_params(&self) -> (u32, u16, u16) {
-        (SAMPLE_RATE, 1, 16)  // 24kHz, mono, 16-bit
+        (SAMPLE_RATE, 1, 16) // 24kHz, mono, 16-bit
     }
 
     /// Process incoming audio for learning (placeholder for mem8 integration)
@@ -829,7 +1052,8 @@ impl BabyTts {
         let index = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as usize) % baby_sounds.len();
+            .as_secs() as usize)
+            % baby_sounds.len();
         let sound = baby_sounds[index];
         self.speak(sound)
     }
@@ -837,14 +1061,18 @@ impl BabyTts {
     /// Echo mode - repeat what was heard (for learning)
     pub fn echo(&mut self, text: &str) -> Result<Vec<f32>, String> {
         // Simple echo with slightly different intonation
-        let echo_speed = self.speed * 1.1;  // Slightly faster for echo
-        self.engine.synthesize_with_options(text, Some(&self.voice), echo_speed, self.gain)
+        let echo_speed = self.speed * 1.1; // Slightly faster for echo
+        self.engine
+            .synthesize_with_options(text, Some(&self.voice), echo_speed, self.gain)
     }
 
     /// Grow vocabulary - increase max words as baby learns
     pub fn grow(&mut self) {
-        self.max_words = (self.max_words + 1).min(20);  // Cap at 20 words for kokoro-tiny
-        eprintln!("🌱 Baby growing! Can now speak {} words at once", self.max_words);
+        self.max_words = (self.max_words + 1).min(20); // Cap at 20 words for kokoro-tiny
+        eprintln!(
+            "🌱 Baby growing! Can now speak {} words at once",
+            self.max_words
+        );
     }
 }
 
@@ -860,7 +1088,8 @@ fn duck_system_audio(level: f32) -> Result<(), String> {
 
     // Press volume down keys to reduce system volume
     for _ in 0..steps {
-        enigo.key(Key::VolumeDown, enigo::Direction::Click)
+        enigo
+            .key(Key::VolumeDown, enigo::Direction::Click)
             .map_err(|e| format!("Failed to press volume down: {:?}", e))?;
         thread::sleep(Duration::from_millis(20)); // Small delay between key presses
     }
@@ -878,10 +1107,37 @@ fn restore_system_audio(level: f32) -> Result<(), String> {
 
     // Press volume up keys to restore system volume
     for _ in 0..steps {
-        enigo.key(Key::VolumeUp, enigo::Direction::Click)
+        enigo
+            .key(Key::VolumeUp, enigo::Direction::Click)
             .map_err(|e| format!("Failed to press volume up: {:?}", e))?;
         thread::sleep(Duration::from_millis(20)); // Small delay between key presses
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crossfade_extends_buffer() {
+        let mut buffer = vec![1.0, 1.0, 1.0];
+        let next = vec![0.0, 0.0, 0.0];
+        append_with_crossfade(&mut buffer, &next, 2);
+        // Result should be len 4 (3 + 3 - overlap)
+        assert_eq!(buffer.len(), 4);
+        // Last sample should come from next chunk
+        assert!((buffer.last().copied().unwrap() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn detects_need_for_chunking() {
+        let short = "hello world";
+        assert!(!needs_chunking(short));
+
+        let long = "This sentence is intentionally quite a bit longer than the \
+                    short sample so that it exceeds the chunking threshold we set.";
+        assert!(needs_chunking(long));
+    }
 }

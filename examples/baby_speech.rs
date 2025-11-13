@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Stage 3: Two-word phrases
     println!("Stage 3: Two-word phrases");
-    baby.grow();  // Increase vocabulary capacity
+    baby.grow(); // Increase vocabulary capacity
     let phrases = ["want milk", "up please", "bye bye"];
     for phrase in &phrases {
         println!("  Speaking: '{}'", phrase);
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Stage 4: Simple sentences
     println!("Stage 4: Simple sentences");
-    baby.grow();  // Further growth
+    baby.grow(); // Further growth
     baby.grow();
     let sentence = "I want milk please";
     println!("  Speaking: '{}'", sentence);

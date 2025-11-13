@@ -104,14 +104,14 @@ impl AlertType {
 
     fn voice(&self) -> &str {
         match self {
-            AlertType::Success => "af_bella",  // Cheerful
-            AlertType::Error => "am_adam",     // Serious male
-            AlertType::Warning => "bf_emma",   // Clear British
-            AlertType::Info => "af_sky",       // Default friendly
-            AlertType::Build => "am_michael",  // Professional
-            AlertType::Test => "af_nicole",    // Precise
-            AlertType::Deploy => "am_echo",    // Confident
-            AlertType::Custom => "af_heart",   // Warm
+            AlertType::Success => "af_bella", // Cheerful
+            AlertType::Error => "am_adam",    // Serious male
+            AlertType::Warning => "bf_emma",  // Clear British
+            AlertType::Info => "af_sky",      // Default friendly
+            AlertType::Build => "am_michael", // Professional
+            AlertType::Test => "af_nicole",   // Precise
+            AlertType::Deploy => "am_echo",   // Confident
+            AlertType::Custom => "af_heart",  // Warm
         }
     }
 }
@@ -124,7 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Initialize TTS engine (uses ~/.cache/k automatically)
-    let mut engine = rt.block_on(TtsEngine::new())
+    let mut engine = rt
+        .block_on(TtsEngine::new())
         .map_err(|e| format!("Failed to initialize TTS: {}", e))?;
 
     // List voices if requested
@@ -138,9 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get text to speak based on command
     let (text, voice) = match cli.command {
-        Some(Commands::Say { text }) => {
-            (text, cli.voice)
-        }
+        Some(Commands::Say { text }) => (text, cli.voice),
 
         Some(Commands::Pipe) => {
             // Read from stdin
@@ -152,7 +151,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (lines.join(" "), cli.voice)
         }
 
-        Some(Commands::Alert { alert_type, message }) => {
+        Some(Commands::Alert {
+            alert_type,
+            message,
+        }) => {
             let text = message.unwrap_or_else(|| alert_type.default_message().to_string());
             let voice = alert_type.voice().to_string();
             (text, voice)
@@ -172,7 +174,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("  kokoro-speak say \"Hello world!\"");
                 eprintln!("  echo \"Build complete\" | kokoro-speak pipe");
                 eprintln!("  kokoro-speak alert success");
-                eprintln!("  kokoro-speak context \"Found 5 TypeScript files with 200 lines total\"");
+                eprintln!(
+                    "  kokoro-speak context \"Found 5 TypeScript files with 200 lines total\""
+                );
                 return Ok(());
             }
 
@@ -186,12 +190,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Synthesize speech with speed and gain control
-    let audio = engine.synthesize_with_options(&text, Some(&voice), cli.speed, cli.gain)
+    let audio = engine
+        .synthesize_with_options(&text, Some(&voice), cli.speed, cli.gain)
         .map_err(|e| format!("Synthesis failed: {}", e))?;
 
     // Output to file or play
     if let Some(output_path) = cli.output {
-        engine.save_wav(&output_path, &audio)
+        engine
+            .save_wav(&output_path, &audio)
             .map_err(|e| format!("Failed to save audio: {}", e))?;
         println!("💾 Saved to: {}", output_path);
     } else {
@@ -209,7 +215,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 String::new()
             };
 
-            println!("🔊 Speaking: \"{}\" [voice: {}, speed: {}x, volume: {}{}{}]",
+            println!(
+                "🔊 Speaking: \"{}\" [voice: {}, speed: {}x, volume: {}{}{}]",
                 if text.len() > 50 {
                     format!("{}...", &text[..50])
                 } else {
@@ -224,10 +231,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Use ducking if enabled
             if cli.duck {
-                engine.play_with_ducking(&audio, cli.volume, true, cli.duck_level)
+                engine
+                    .play_with_ducking(&audio, cli.volume, true, cli.duck_level)
                     .map_err(|e| format!("Playback with ducking failed: {}", e))?;
             } else {
-                engine.play(&audio, cli.volume)
+                engine
+                    .play(&audio, cli.volume)
                     .map_err(|e| format!("Playback failed: {}", e))?;
             }
         }
@@ -236,9 +245,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             // Fallback: save to temp file
             let temp_file = "/tmp/kokoro_output.wav";
-            engine.save_wav(temp_file, &audio)
+            engine
+                .save_wav(temp_file, &audio)
                 .map_err(|e| format!("Failed to save audio: {}", e))?;
-            println!("💾 Audio saved to: {} (playback feature not enabled)", temp_file);
+            println!(
+                "💾 Audio saved to: {} (playback feature not enabled)",
+                temp_file
+            );
         }
     }
 

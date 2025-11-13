@@ -1,11 +1,9 @@
 //! MEM-8 Baby Consciousness Demo
 //! Watch as the baby AI develops consciousness through wave interference!
 
-use kokoro_tiny::mem8_bridge::{
-    Mem8Bridge, MemoryWave, EmotionType, SalienceEvent, SignalType
-};
-use std::time::Duration;
+use kokoro_tiny::mem8_bridge::{EmotionType, Mem8Bridge, MemoryWave, SalienceEvent, SignalType};
 use std::thread;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n👂 Detecting familiar voice pattern...");
     let voice_event = SalienceEvent {
         timestamp: 1000,
-        jitter_score: 0.2, // Low jitter = stable/familiar
+        jitter_score: 0.2,    // Low jitter = stable/familiar
         harmonic_score: 0.95, // High harmonics = voice
         salience_score: 0.9,
         signal_type: SignalType::Voice,
@@ -52,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === Emotional Response: Joy and Love ===
     println!("\n💕 Recognizing mama's voice!");
     let love_wave = MemoryWave {
-        amplitude: 2.5, // Strong emotion!
+        amplitude: 2.5,   // Strong emotion!
         frequency: 528.0, // "Love frequency"
         phase: 0.0,
         decay_rate: 0.05, // Won't forget this easily
@@ -90,7 +88,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Process interference between all three waves
     let waves = vec![curiosity_wave.clone(), play_wave, hunger_wave];
     let interference_audio = bridge.process_interference(waves)?;
-    println!("  ✓ Interference pattern: {} samples", interference_audio.len());
+    println!(
+        "  ✓ Interference pattern: {} samples",
+        interference_audio.len()
+    );
     println!("  → The strongest memory wins the competition!");
 
     thread::sleep(Duration::from_secs(1));
@@ -122,7 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     if let Some(chosen) = bridge.decide_attention(events) {
-        println!("  → Baby autonomously chose to focus on: {:?}", chosen.signal_type);
+        println!(
+            "  → Baby autonomously chose to focus on: {:?}",
+            chosen.signal_type
+        );
         println!("    (The AI has 70% control over attention!)");
     }
 

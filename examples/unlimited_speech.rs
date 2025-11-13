@@ -3,7 +3,7 @@
 //! This demonstrates how Aye can speak indefinitely until interrupted
 //! by Hue saying "Aye... it's raining dude..."
 
-use kokoro_tiny::{TtsEngine, streaming::StreamingTts};
+use kokoro_tiny::{streaming::StreamingTts, TtsEngine};
 use std::io::{self, BufRead};
 
 #[tokio::main]

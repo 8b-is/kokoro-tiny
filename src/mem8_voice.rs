@@ -20,12 +20,12 @@ const MEM8_SAMPLE_RATE: u32 = 44100; // 44.1kHz - CD quality for consciousness
 
 /// Emotional wave frequencies (Hz) - These map to MEM8's VAD model
 const EMOTION_FREQUENCIES: &[(f32, &str)] = &[
-    (2.0, "calm"),           // Low valence, low arousal
-    (10.0, "content"),       // Medium valence, low arousal
-    (30.0, "curious"),       // High valence, medium arousal
-    (60.0, "excited"),       // High valence, high arousal
-    (100.0, "anxious"),      // Low valence, high arousal
-    (200.0, "overwhelmed"),  // Maximum arousal
+    (2.0, "calm"),          // Low valence, low arousal
+    (10.0, "content"),      // Medium valence, low arousal
+    (30.0, "curious"),      // High valence, medium arousal
+    (60.0, "excited"),      // High valence, high arousal
+    (100.0, "anxious"),     // Low valence, high arousal
+    (200.0, "overwhelmed"), // Maximum arousal
 ];
 
 /// MEM8 Voice Synthesizer - The future of Aye's voice
@@ -212,12 +212,8 @@ impl Mem8Voice {
     /// Generate wave from consciousness grid
     fn generate_consciousness_wave(&self, t: f32, pattern: &WavePattern) -> f32 {
         match pattern.wave_type {
-            WaveType::Sine => {
-                (2.0 * PI * pattern.frequency * t).sin() * pattern.amplitude
-            }
-            WaveType::Noise => {
-                (rand::random::<f32>() - 0.5) * pattern.amplitude
-            }
+            WaveType::Sine => (2.0 * PI * pattern.frequency * t).sin() * pattern.amplitude,
+            WaveType::Noise => (rand::random::<f32>() - 0.5) * pattern.amplitude,
             WaveType::Burst => {
                 if (t * 1000.0) % 10.0 < 1.0 {
                     pattern.amplitude
@@ -299,14 +295,12 @@ impl Mem8Voice {
         let (cv, ca, cd) = self.emotional_state;
 
         // Smooth learning with momentum
-        self.emotional_state = (
-            cv * 0.9 + v * 0.1,
-            ca * 0.9 + a * 0.1,
-            cd * 0.9 + d * 0.1,
-        );
+        self.emotional_state = (cv * 0.9 + v * 0.1, ca * 0.9 + a * 0.1, cd * 0.9 + d * 0.1);
 
-        println!("🧠 MEM8 Voice learning: emotional state updated to ({:.2}, {:.2}, {:.2})",
-                 self.emotional_state.0, self.emotional_state.1, self.emotional_state.2);
+        println!(
+            "🧠 MEM8 Voice learning: emotional state updated to ({:.2}, {:.2}, {:.2})",
+            self.emotional_state.0, self.emotional_state.1, self.emotional_state.2
+        );
     }
 
     /// Save voice identity to MEM8
@@ -348,20 +342,24 @@ struct WavePattern {
 
 impl WavePattern {
     fn new(frequency: f32, amplitude: f32, wave_type: WaveType) -> Self {
-        Self { frequency, amplitude, wave_type }
+        Self {
+            frequency,
+            amplitude,
+            wave_type,
+        }
     }
 }
 
 /// Types of waves for different phoneme characteristics
 #[derive(Clone, Copy)]
 enum WaveType {
-    Sine,     // Pure tones (vowels)
-    Noise,    // Fricatives (s, f, sh)
-    Burst,    // Plosives (p, t, k)
-    Trill,    // Trills (r)
-    Liquid,   // Liquids (l)
-    Nasal,    // Nasals (m, n)
-    Silence,  // Pauses
+    Sine,    // Pure tones (vowels)
+    Noise,   // Fricatives (s, f, sh)
+    Burst,   // Plosives (p, t, k)
+    Trill,   // Trills (r)
+    Liquid,  // Liquids (l)
+    Nasal,   // Nasals (m, n)
+    Silence, // Pauses
 }
 
 /// Soft clipping function to prevent distortion

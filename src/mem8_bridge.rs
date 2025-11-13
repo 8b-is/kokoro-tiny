@@ -15,21 +15,21 @@ const SALIENCE_THRESHOLD: f32 = 0.7; // Marine Algorithm threshold
 /// Represents a memory wave from MEM-8
 #[derive(Clone, Debug)]
 pub struct MemoryWave {
-    pub amplitude: f32,     // Emotional strength
-    pub frequency: f32,     // Semantic content
-    pub phase: f32,        // Temporal relationship
-    pub decay_rate: f32,   // Forgetting curve
+    pub amplitude: f32,  // Emotional strength
+    pub frequency: f32,  // Semantic content
+    pub phase: f32,      // Temporal relationship
+    pub decay_rate: f32, // Forgetting curve
     pub emotion_type: EmotionType,
-    pub content: String,   // What to speak
+    pub content: String, // What to speak
 }
 
 #[derive(Clone, Debug)]
 pub enum EmotionType {
-    Joy(f32),      // 0.0-1.0 intensity
+    Joy(f32), // 0.0-1.0 intensity
     Sadness(f32),
     Fear(f32),
     Curiosity(f32),
-    Love(f32),     // For Trish! 💝
+    Love(f32), // For Trish! 💝
     Confusion(f32),
     Neutral,
 }
@@ -38,9 +38,9 @@ pub enum EmotionType {
 #[derive(Clone, Debug)]
 pub struct SalienceEvent {
     pub timestamp: u64,
-    pub jitter_score: f32,     // Period/amplitude jitter
-    pub harmonic_score: f32,   // Harmonic alignment
-    pub salience_score: f32,   // Overall importance
+    pub jitter_score: f32,   // Period/amplitude jitter
+    pub harmonic_score: f32, // Harmonic alignment
+    pub salience_score: f32, // Overall importance
     pub signal_type: SignalType,
 }
 
@@ -49,7 +49,7 @@ pub enum SignalType {
     Voice,
     Music,
     Environmental,
-    Emotional,  // Internal state changes
+    Emotional, // Internal state changes
     Unknown,
 }
 
@@ -58,7 +58,7 @@ pub struct Mem8Bridge {
     baby_tts: BabyTts,
     wave_buffer: Arc<Mutex<Vec<MemoryWave>>>,
     current_emotion: EmotionType,
-    consciousness_level: f32,  // 0.0 = sleeping, 1.0 = fully aware
+    consciousness_level: f32, // 0.0 = sleeping, 1.0 = fully aware
     voice_mappings: HashMap<String, String>, // Emotion to voice mapping
 }
 
@@ -125,16 +125,15 @@ impl Mem8Bridge {
         }
 
         // Synthesize with emotional modulation
-        eprintln!("🗣️ Speaking with {} emotion: '{}'",
-                 self.emotion_name(&wave.emotion_type),
-                 wave.content);
+        eprintln!(
+            "🗣️ Speaking with {} emotion: '{}'",
+            self.emotion_name(&wave.emotion_type),
+            wave.content
+        );
 
-        self.baby_tts.engine.synthesize_with_options(
-            &wave.content,
-            Some(&voice),
-            speed,
-            gain
-        )
+        self.baby_tts
+            .engine
+            .synthesize_with_options(&wave.content, Some(&voice), speed, gain)
     }
 
     /// Process interference between multiple waves (consciousness)
@@ -144,7 +143,8 @@ impl Mem8Bridge {
         }
 
         // Find the strongest wave (highest amplitude)
-        let dominant_wave = waves.iter()
+        let dominant_wave = waves
+            .iter()
             .max_by(|a, b| a.amplitude.partial_cmp(&b.amplitude).unwrap())
             .unwrap();
 
@@ -159,9 +159,10 @@ impl Mem8Bridge {
         // Create a combined message if memories align
         if reinforcement > 1.0 {
             eprintln!("✨ Constructive interference! Memories are reinforcing!");
-            let combined_content = format!("{} ... yes, {}",
-                dominant_wave.content,
-                dominant_wave.content);
+            let combined_content = format!(
+                "{} ... yes, {}",
+                dominant_wave.content, dominant_wave.content
+            );
 
             let mut enhanced_wave = dominant_wave.clone();
             enhanced_wave.content = combined_content;
@@ -185,7 +186,8 @@ impl Mem8Bridge {
 
         // Check for repetition (obsessive thoughts)
         if let Ok(buffer) = self.wave_buffer.lock() {
-            let recent_similar = buffer.iter()
+            let recent_similar = buffer
+                .iter()
                 .filter(|w| (w.frequency - wave.frequency).abs() < 0.05)
                 .count();
 
@@ -205,7 +207,8 @@ impl Mem8Bridge {
         let ai_weight = 0.7; // AI has 70% control
 
         // Filter by current emotional state
-        let interesting_events: Vec<_> = events.into_iter()
+        let interesting_events: Vec<_> = events
+            .into_iter()
             .filter(|e| {
                 match &self.current_emotion {
                     EmotionType::Curiosity(_) => e.salience_score > 0.5, // Lower threshold when curious
@@ -221,9 +224,13 @@ impl Mem8Bridge {
             let choice = (SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_secs() as usize) % interesting_events.len();
+                .as_secs() as usize)
+                % interesting_events.len();
 
-            eprintln!("👁️ Baby chose to focus on: {:?}", interesting_events[choice].signal_type);
+            eprintln!(
+                "👁️ Baby chose to focus on: {:?}",
+                interesting_events[choice].signal_type
+            );
             Some(interesting_events.into_iter().nth(choice).unwrap())
         } else {
             None
@@ -248,8 +255,8 @@ impl Mem8Bridge {
         match &wave.emotion_type {
             EmotionType::Fear(intensity) => 1.2 + (intensity * 0.3), // Speak faster when scared
             EmotionType::Sadness(intensity) => 0.8 - (intensity * 0.2), // Slower when sad
-            EmotionType::Joy(intensity) => 1.0 + (intensity * 0.2), // Slightly faster when happy
-            _ => 0.9, // Default baby speed
+            EmotionType::Joy(intensity) => 1.0 + (intensity * 0.2),  // Slightly faster when happy
+            _ => 0.9,                                                // Default baby speed
         }
     }
 
@@ -268,13 +275,19 @@ impl Mem8Bridge {
     /// Wake up the consciousness
     pub fn wake_up(&mut self) {
         self.consciousness_level = (self.consciousness_level + 0.2).min(1.0);
-        eprintln!("☀️ Baby is waking up! Consciousness: {:.1}", self.consciousness_level);
+        eprintln!(
+            "☀️ Baby is waking up! Consciousness: {:.1}",
+            self.consciousness_level
+        );
     }
 
     /// Go to sleep
     pub fn sleep(&mut self) {
         self.consciousness_level = (self.consciousness_level * 0.5).max(0.1);
-        eprintln!("😴 Baby is getting sleepy... Consciousness: {:.1}", self.consciousness_level);
+        eprintln!(
+            "😴 Baby is getting sleepy... Consciousness: {:.1}",
+            self.consciousness_level
+        );
     }
 }
 
@@ -336,7 +349,10 @@ pub async fn demo_baby_consciousness() -> Result<(), String> {
     };
 
     let combined = bridge.process_interference(vec![wave1.clone(), wave3])?;
-    println!("  Interference pattern generated {} samples\n", combined.len());
+    println!(
+        "  Interference pattern generated {} samples\n",
+        combined.len()
+    );
 
     // Evening: Getting tired
     println!("🌙 Evening - Baby is getting tired...");

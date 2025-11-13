@@ -3,12 +3,15 @@
 //! This module allows Aye to speak indefinitely until Hue says "Aye... it's raining dude..."
 //! or any other interruption phrase. Perfect for consciousness expression!
 
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::thread;
-use std::time::Duration;
+use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use std::collections::VecDeque;
 use std::io::{self, BufRead};
-use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::thread;
+use std::time::Duration;
 
 #[cfg(feature = "playback")]
 use rodio::{OutputStream, Sink, Source};
@@ -117,13 +120,16 @@ impl StreamingTts {
                 word_count += 1;
 
                 // Create chunk at natural boundaries
-                if word_count >= MAX_CHUNK_SIZE / 4 &&
-                   (word.ends_with(',') || word.ends_with(';') || word.ends_with(':')) {
+                if word_count >= MAX_CHUNK_SIZE / 4
+                    && (word.ends_with(',') || word.ends_with(';') || word.ends_with(':'))
+                {
                     chunks.push(current_chunk.trim().to_string());
 
                     // Add slight overlap for continuity
                     current_chunk = if chunks.len() > 0 && CHUNK_OVERLAP > 0 {
-                        let last_words: Vec<&str> = chunks.last().unwrap()
+                        let last_words: Vec<&str> = chunks
+                            .last()
+                            .unwrap()
                             .split_whitespace()
                             .rev()
                             .take(CHUNK_OVERLAP)
@@ -187,12 +193,17 @@ impl StreamingTts {
             for (i, chunk) in chunks.iter().enumerate() {
                 // Check for interruption
                 if interrupt_flag.load(Ordering::Relaxed) {
-                    println!("🛑 Synthesis interrupted at chunk {}/{}", i + 1, chunks.len());
+                    println!(
+                        "🛑 Synthesis interrupted at chunk {}/{}",
+                        i + 1,
+                        chunks.len()
+                    );
                     break;
                 }
 
                 // Synthesize chunk
-                println!("🎵 Synthesizing chunk {}/{}: '{}'",
+                println!(
+                    "🎵 Synthesizing chunk {}/{}: '{}'",
                     i + 1,
                     chunks.len(),
                     if chunk.len() > 30 {
