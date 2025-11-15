@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 #[cfg(feature = "flac-format")]
-                "flac" => tts.save_flac(filename.as_str(), &audio),
+                "flac" => tts.save_flac(&filename, &audio),
                 #[cfg(not(feature = "flac-format"))]
                 "flac" => {
                     println!("  FLAC   | [disabled] |           | Enable with --features flac-format");
