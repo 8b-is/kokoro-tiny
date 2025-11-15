@@ -37,7 +37,7 @@ struct Cli {
     duck_level: f32,
 
     /// Speech speed (0.5 = slower, 1.0 = normal, 2.0 = faster)
-    #[arg(short = 's', long, default_value = "0.85")]
+    #[arg(short = 's', long, default_value = "1.0")]
     speed: f32,
 
     /// Audio gain/amplification (0.5 = quieter, 1.0 = normal, 2.0+ = louder, 4.0+ = maximum)

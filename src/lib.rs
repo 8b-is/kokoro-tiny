@@ -58,7 +58,8 @@ const MODEL_URL: &str = "https://i1.is/k/0.onnx";
 const VOICES_URL: &str = "https://i1.is/k/0.bin";
 const SAMPLE_RATE: u32 = 24000; // Kokoro model sample rate
 const DEFAULT_VOICE: &str = "af_sky";
-const DEFAULT_SPEED: f32 = 0.85; // Slightly slower for better clarity
+const DEFAULT_SPEED: f32 = 1.0; // User-facing normal speed (maps to model 0.65)
+const SPEED_SCALE: f32 = 0.65; // Model speed = user speed * this scale factor
 const LONG_TEXT_THRESHOLD: usize = 120;
 const MAX_CHARS_PER_CHUNK: usize = 180;
 const CHUNK_CROSSFADE_MS: usize = 45;
@@ -287,7 +288,9 @@ impl TtsEngine {
             .as_ref()
             .ok_or_else(|| "TTS engine not initialized".to_string())?;
 
-        let clamped_speed = speed.clamp(MIN_ENGINE_SPEED, MAX_ENGINE_SPEED);
+        // Map user-facing speed to model speed (user 1.0 = model 0.65)
+        let model_speed = speed * SPEED_SCALE;
+        let clamped_speed = model_speed.clamp(MIN_ENGINE_SPEED, MAX_ENGINE_SPEED);
         let voice = voice.unwrap_or(DEFAULT_VOICE);
 
         // Parse voice style (e.g., "af_sky.8+af_bella.2" for mixing)
@@ -358,21 +361,22 @@ impl TtsEngine {
         let phonemes = text_to_phonemes(text, "en", None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {}", e))?;
 
-        // Join phonemes and add padding tokens at beginning and end
-        // This is crucial to prevent word dropping, especially at the beginning
-        let mut phonemes_text = phonemes.join("");
-        phonemes_text.insert(0, PAD_TOKEN);
-        phonemes_text.push(PAD_TOKEN);
+        // Join phonemes with spaces and add padding tokens at beginning and end
+        // Spaces between phonemes create natural pauses for commas and periods
+        // Padding tokens are crucial to prevent word dropping at beginning and end
+        let mut phonemes_text = phonemes.join(" ");
+        // Add multiple padding tokens for better buffering
+        phonemes_text.insert_str(0, "$$$");
+        phonemes_text.push_str("$$$");
 
-        // Always debug for investigation
-        eprintln!("🔍 DEBUG: Text: '{}'", text);
-        eprintln!("   Phonemes array: {} entries", phonemes.len());
-        eprintln!("   Phoneme entries: {:?}", phonemes);
-        eprintln!("   Phoneme text (with padding): '{}'", phonemes_text);
-        eprintln!("   Phoneme text length: {} chars", phonemes_text.len());
+        // Debug output only for long text
+        if text.len() > 50 {
+            eprintln!("   Text length: {} chars", text.len());
+            eprintln!("   Phonemes array: {} entries", phonemes.len());
+            eprintln!("   Phoneme text length: {} chars", phonemes_text.len());
+        }
 
         let tokens = self.tokenize(phonemes_text);
-        eprintln!("   Tokens: {:?} (len: {})", tokens, tokens.len());
 
         // Run inference with user-specified speed directly
         self.run_inference(session, tokens, style.to_vec(), speed)
@@ -735,25 +739,15 @@ impl TtsEngine {
             .try_extract_tensor::<f32>()
             .map_err(|e| format!("Failed to extract audio tensor: {}", e))?;
 
-        // Debug output shape for all outputs
+        // Debug output shape for longer text
         let data_vec = data.to_vec();
-        eprintln!(
-            "   Output audio shape: {:?}, samples: {}",
-            shape,
-            data_vec.len()
-        );
-
-        // Check for silence at beginning
-        let first_100_samples: Vec<f32> = data_vec.iter().take(100).copied().collect();
-        let max_amplitude = first_100_samples.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
-        eprintln!("   First 100 samples max amplitude: {}", max_amplitude);
-
-        // Find first non-silent sample
-        let silence_threshold = 0.001;
-        let first_sound_idx = data_vec.iter()
-            .position(|&sample| sample.abs() > silence_threshold)
-            .unwrap_or(0);
-        eprintln!("   First non-silent sample at index: {}/{}", first_sound_idx, data_vec.len());
+        if token_count > 100 {
+            eprintln!(
+                "   Output audio shape: {:?}, samples: {}",
+                shape,
+                data_vec.len()
+            );
+        }
 
         Ok(data_vec)
     }
