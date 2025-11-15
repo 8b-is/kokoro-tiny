@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Get file size
-            let metadata = fs::metadata(filename.as_str())?;
+            let metadata = fs::metadata(&filename)?;
             let size_kb = metadata.len() as f64 / 1024.0;
 
             let notes = match *format {
