@@ -762,6 +762,9 @@ impl TtsEngine {
     #[cfg(feature = "flac-format")]
     /// Save audio to FLAC file - lossless quality for when you're getting FLAC!
     /// Note: FLAC encoding requires additional dependencies. For now, use WAV for lossless.
+    /// 
+    /// The `_audio` parameter is present for API consistency and future compatibility,
+    /// but is currently unused because FLAC encoding is not supported.
     pub fn save_flac(&self, path: &str, _audio: &[f32]) -> Result<(), String> {
         // The flac crate is for decoding, not encoding
         // For lossless audio, use WAV format instead
