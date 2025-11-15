@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 #[cfg(feature = "opus-format")]
-                "opus" => tts.save_opus(filename.as_str(), &audio, 24000),
+                "opus" => tts.save_opus(&filename, &audio, 24000),
                 #[cfg(not(feature = "opus-format"))]
                 "opus" => {
                     println!("  OPUS   | [disabled] |           | Enable with --features opus-format");
