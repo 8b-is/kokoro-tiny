@@ -53,9 +53,9 @@ use std::io::Cursor;
 #[cfg(feature = "ducking")]
 use enigo::{Enigo, Key, Keyboard, Settings};
 
-// Constants - Files hosted at i1.is/k/ for minimal paths!
-const MODEL_URL: &str = "https://i1.is/k/0.onnx";
-const VOICES_URL: &str = "https://i1.is/k/0.bin";
+// Constants - Model files stored in GitHub LFS
+const MODEL_URL: &str = "https://github.com/8bit-wraith/kokoro-tiny/raw/main/models/0.onnx";
+const VOICES_URL: &str = "https://github.com/8bit-wraith/kokoro-tiny/raw/main/models/0.bin";
 const SAMPLE_RATE: u32 = 24000; // Kokoro model sample rate
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0; // User-facing normal speed (maps to model 0.65)

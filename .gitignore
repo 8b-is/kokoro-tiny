@@ -11,8 +11,10 @@ voices-v1.0.bin
 .claude_consciousness.m8
 .env
 .env.local
-0.onnx
-0.bin
+/0.onnx
+/0.bin
+!models/*.onnx
+!models/*.bin
 *.lock
 .DS_Store
 .idea/
