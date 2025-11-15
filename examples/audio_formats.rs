@@ -50,10 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let start = Instant::now();
 
             let result = match *format {
-                "wav" => tts.save_wav(&filename, &audio),
+                "wav" => tts.save_wav(filename.as_str(), &audio),
 
                 #[cfg(feature = "mp3")]
-                "mp3" => tts.save_mp3(&filename, &audio),
+                "mp3" => tts.save_mp3(filename.as_str(), &audio),
                 #[cfg(not(feature = "mp3"))]
                 "mp3" => {
                     println!("  MP3    | [disabled] |           | Enable with --features mp3");
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 #[cfg(feature = "opus-format")]
-                "opus" => tts.save_opus(&filename, &audio, 24000),
+                "opus" => tts.save_opus(filename.as_str(), &audio, 24000),
                 #[cfg(not(feature = "opus-format"))]
                 "opus" => {
                     println!("  OPUS   | [disabled] |           | Enable with --features opus-format");
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 #[cfg(feature = "flac-format")]
-                "flac" => tts.save_flac(&filename, &audio),
+                "flac" => tts.save_flac(filename.as_str(), &audio),
                 #[cfg(not(feature = "flac-format"))]
                 "flac" => {
                     println!("  FLAC   | [disabled] |           | Enable with --features flac-format");
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Get file size
-            let metadata = fs::metadata(&filename)?;
+            let metadata = fs::metadata(filename.as_str())?;
             let size_kb = metadata.len() as f64 / 1024.0;
 
             let notes = match *format {

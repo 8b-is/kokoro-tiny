@@ -25,8 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("Build complete.", "Short sentence"),
 
         // Unicode handling - smart quotes, dashes, ellipsis
-        (""Hello world"", "Smart quotes"),
-        ("Don't worry—it's fine", "Smart apostrophe and em dash"),
+        ("\u{201C}Hello world\u{201D}", "Smart quotes"),
+        ("Don\u{2019}t worry\u{2014}it\u{2019}s fine", "Smart apostrophe and em dash"),
         ("Loading…", "Ellipsis character"),
         ("Price: $10–$20", "En dash"),
 

@@ -39,18 +39,20 @@ use unicode_normalization::UnicodeNormalization;
 use std::io::Cursor;
 
 #[cfg(feature = "playback")]
-use rodio::{Decoder, OutputStream, Sink, Source};
-#[cfg(feature = "playback")]
-use std::io::Cursor;
+use rodio::{Decoder, OutputStream, Sink};
 
 // Constants
-const MODEL_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
-const VOICES_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
+const MODEL_URL: &str = "https://github.com/8b-is/kokoro-tiny/raw/main/models/0.onnx";
+const VOICES_URL: &str = "https://github.com/8b-is/kokoro-tiny/raw/main/models/0.bin";
 const SAMPLE_RATE: u32 = 24000;
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0;
+// Speed scale factor: user speed 1.0 maps to model speed 0.65 for natural pacing
+const SPEED_SCALE: f32 = 0.65;
 // Pad token used to mark sequence boundaries (must be present in vocabulary)
 const PAD: char = '$';
+// Triple padding for reliable word boundary buffering
+const PAD_STR: &str = "$$$";
 // Maximum number of tokens the model can handle
 const MAX_TOKENS: usize = 512;
 
@@ -165,16 +167,11 @@ impl TtsEngine {
 
         // Replace common unicode characters that might not be in vocab
         let sanitized = normalized
-            .replace('\u{2018}', "'")  // Left single quote to regular
-            .replace('\u{2019}', "'")  // Right single quote to regular
-            .replace('\u{201C}', "\"") // Left double quote
-            .replace('\u{201D}', "\"") // Right double quote
-            .replace('\u{2013}', "-")  // En dash to hyphen
-            .replace('\u{2014}', "-")  // Em dash to hyphen
+            .replace(['\u{2018}', '\u{2019}'], "'")  // Smart single quotes to regular
+            .replace(['\u{201C}', '\u{201D}'], "\"") // Smart double quotes to regular
+            .replace(['\u{2013}', '\u{2014}'], "-")  // En/Em dash to hyphen
             .replace('\u{2026}', "...") // Ellipsis to three dots
-            .replace('\t', " ")  // Tab to space
-            .replace('\r', " ")  // Carriage return to space
-            .replace('\n', " "); // Newline to space
+            .replace(['\t', '\r', '\n'], " ");  // Whitespace to space
 
         // Collapse multiple spaces
         let re = Regex::new(r"\s+").unwrap();
@@ -236,7 +233,7 @@ impl TtsEngine {
         // Regex to split text by sentences and commas, keeping the delimiter
         let re = Regex::new(r"([^,!?.]+[!?.,]*)").unwrap();
         let mut full_audio = Vec::new();
-        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED) * SPEED_SCALE;
 
         let mut has_content = false;
 
@@ -293,7 +290,7 @@ impl TtsEngine {
         // Split text by sentences to respect token boundaries
         let re = Regex::new(r"([^.!?]+[.!?]+)").unwrap();
         let mut full_audio = Vec::new();
-        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED) * SPEED_SCALE;
 
         let mut current_chunk = String::new();
         
@@ -310,7 +307,7 @@ impl TtsEngine {
             // Check if this would exceed token limit
             let phonemes = text_to_phonemes(&test_chunk, "en", None, true, false)
                 .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
-            let phonemes_str = format!("{}{}{}", PAD, phonemes.join(""), PAD);
+            let phonemes_str = format!("{}{}{}", PAD_STR, phonemes.join(" "), PAD_STR);
             let tokens = self.tokenize(&phonemes_str);
             
             if !tokens.is_empty() && tokens[0].len() > MAX_TOKENS {
@@ -328,7 +325,7 @@ impl TtsEngine {
                 // Check if the sentence itself exceeds MAX_TOKENS
                 let sentence_phonemes = text_to_phonemes(sentence, "en", None, true, false)
                     .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
-                let sentence_phonemes_str = format!("{}{}{}", PAD, sentence_phonemes.join(""), PAD);
+                let sentence_phonemes_str = format!("{}{}{}", PAD_STR, sentence_phonemes.join(" "), PAD_STR);
                 let sentence_tokens = self.tokenize(&sentence_phonemes_str);
                 
                 if !sentence_tokens.is_empty() && sentence_tokens[0].len() > MAX_TOKENS {
@@ -351,9 +348,9 @@ impl TtsEngine {
             // Check if remaining chunk exceeds limit
             let phonemes = text_to_phonemes(&current_chunk, "en", None, true, false)
                 .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
-            let phonemes_str = format!("{}{}{}", PAD, phonemes.join(""), PAD);
+            let phonemes_str = format!("{}{}{}", PAD_STR, phonemes.join(" "), PAD_STR);
             let tokens = self.tokenize(&phonemes_str);
-            
+
             if !tokens.is_empty() && tokens[0].len() > MAX_TOKENS {
                 // Last chunk exceeds limit, split by words
                 let chunk_audio = self.synthesize_by_words(&current_chunk, voice, Some(speed_val))?;
@@ -377,7 +374,7 @@ impl TtsEngine {
         let normalized = self.normalize_text(text);
         let words: Vec<&str> = normalized.split_whitespace().collect();
         let mut full_audio = Vec::new();
-        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED) * SPEED_SCALE;
 
         let mut current_chunk = String::new();
         
@@ -391,7 +388,7 @@ impl TtsEngine {
             // Check if this would exceed token limit
             let phonemes = text_to_phonemes(&test_chunk, "en", None, true, false)
                 .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
-            let phonemes_str = format!("{}{}{}", PAD, phonemes.join(""), PAD);
+            let phonemes_str = format!("{}{}{}", PAD_STR, phonemes.join(" "), PAD_STR);
             let tokens = self.tokenize(&phonemes_str);
             
             if !tokens.is_empty() && tokens[0].len() > MAX_TOKENS {
@@ -407,7 +404,7 @@ impl TtsEngine {
                 // Check if the single word itself exceeds MAX_TOKENS
                 let word_phonemes = text_to_phonemes(word, "en", None, true, false)
                     .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
-                let word_phonemes_str = format!("{}{}{}", PAD, word_phonemes.join(""), PAD);
+                let word_phonemes_str = format!("{}{}{}", PAD_STR, word_phonemes.join(" "), PAD_STR);
                 let word_tokens = self.tokenize(&word_phonemes_str);
                 
                 if !word_tokens.is_empty() && word_tokens[0].len() > MAX_TOKENS {
@@ -457,7 +454,7 @@ impl TtsEngine {
         }
 
         let voice = voice.unwrap_or(DEFAULT_VOICE);
-        let speed_val = speed.unwrap_or(DEFAULT_SPEED);
+        let speed_val = speed.unwrap_or(DEFAULT_SPEED) * SPEED_SCALE;
 
         // Get voice styles (all 510 variations)
         let voice_styles = self.voices.get(voice)
@@ -468,10 +465,10 @@ impl TtsEngine {
         let phonemes = text_to_phonemes(&normalized, "en", None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
 
-        // Join phonemes into a single string and pad at the start/end so short
-        // inputs don't lose leading or trailing tokens (e.g. "it's 21:22")
-        let inner = phonemes.join("");
-        let phonemes_str = format!("{}{}{}", PAD, inner, PAD);
+        // Join phonemes with spaces for natural pausing and pad at the start/end
+        // with triple padding to prevent word dropping
+        let inner = phonemes.join(" ");
+        let phonemes_str = format!("{}{}{}", PAD_STR, inner, PAD_STR);
 
         // Check if we have any valid phonemes
         if phonemes_str.is_empty() {
@@ -522,9 +519,9 @@ impl TtsEngine {
         let phonemes = text_to_phonemes(&normalized, "en", None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {:?}", e))?;
 
-        // Join phonemes into a single string and pad
-        let inner = phonemes.join("");
-        let phonemes_str = format!("{}{}{}", PAD, inner, PAD);
+        // Join phonemes with spaces for natural pausing and triple padding
+        let inner = phonemes.join(" ");
+        let phonemes_str = format!("{}{}{}", PAD_STR, inner, PAD_STR);
 
         // Check if we have any valid phonemes
         if phonemes_str.is_empty() {
@@ -661,7 +658,7 @@ impl TtsEngine {
     #[cfg(feature = "mp3")]
     /// Save audio to MP3 file (requires mp3 feature)
     pub fn save_mp3(&self, path: &str, audio: &[f32]) -> Result<(), String> {
-        use mp3lame_encoder::{Builder, Encoder, FlushNoGap};
+        use mp3lame_encoder::{Builder, FlushNoGap};
 
         // Ensure directory exists
         if let Some(parent) = Path::new(path).parent() {
@@ -675,27 +672,36 @@ impl TtsEngine {
             .collect();
 
         // Setup MP3 encoder
-        let mut encoder = Builder::new()
-            .map_err(|e| format!("Failed to create MP3 encoder: {:?}", e))?
-            .set_num_channels(1)
-            .map_err(|e| format!("Failed to set channels: {:?}", e))?
-            .set_sample_rate(SAMPLE_RATE)
-            .map_err(|e| format!("Failed to set sample rate: {:?}", e))?
-            .set_brate(mp3lame_encoder::Bitrate::Kbps128)
-            .map_err(|e| format!("Failed to set bitrate: {:?}", e))?
-            .set_quality(mp3lame_encoder::Quality::Best)
-            .map_err(|e| format!("Failed to set quality: {:?}", e))?
-            .build()
+        let mut builder = Builder::new()
+            .ok_or("Failed to create MP3 encoder")?;
+        builder.set_num_channels(1)
+            .map_err(|e| format!("Failed to set channels: {:?}", e))?;
+        builder.set_sample_rate(SAMPLE_RATE)
+            .map_err(|e| format!("Failed to set sample rate: {:?}", e))?;
+        builder.set_brate(mp3lame_encoder::Bitrate::Kbps128)
+            .map_err(|e| format!("Failed to set bitrate: {:?}", e))?;
+        builder.set_quality(mp3lame_encoder::Quality::Best)
+            .map_err(|e| format!("Failed to set quality: {:?}", e))?;
+        let mut encoder = builder.build()
             .map_err(|e| format!("Failed to build encoder: {:?}", e))?;
 
         let mut mp3_data = Vec::new();
-        let encoded = encoder.encode(&samples)
+        let input = mp3lame_encoder::MonoPcm(&samples);
+        let mut mp3_out_buffer = Vec::with_capacity(mp3lame_encoder::max_required_buffer_size(samples.len()));
+        let encoded_size = encoder.encode(input, mp3_out_buffer.spare_capacity_mut())
             .map_err(|e| format!("Failed to encode: {:?}", e))?;
-        mp3_data.extend_from_slice(&encoded);
+        unsafe {
+            mp3_out_buffer.set_len(mp3_out_buffer.len() + encoded_size);
+        }
+        mp3_data.extend_from_slice(&mp3_out_buffer);
 
-        let encoded = encoder.flush::<FlushNoGap>()
+        let mut flush_buffer = Vec::with_capacity(mp3lame_encoder::max_required_buffer_size(0));
+        let flush_size = encoder.flush::<FlushNoGap>(flush_buffer.spare_capacity_mut())
             .map_err(|e| format!("Failed to flush: {:?}", e))?;
-        mp3_data.extend_from_slice(&encoded);
+        unsafe {
+            flush_buffer.set_len(flush_size);
+        }
+        mp3_data.extend_from_slice(&flush_buffer);
 
         // Write to file
         let mut file = File::create(path)
@@ -730,7 +736,7 @@ impl TtsEngine {
         ).map_err(|e| format!("Failed to create OPUS encoder: {:?}", e))?;
 
         // Set bitrate (typical: 24000 for speech)
-        encoder.set_bitrate(bitrate)
+        encoder.set_bitrate(audiopus::Bitrate::BitsPerSecond(bitrate))
             .map_err(|e| format!("Failed to set bitrate: {:?}", e))?;
 
         // Encode in chunks (OPUS needs specific frame sizes)
@@ -755,38 +761,14 @@ impl TtsEngine {
 
     #[cfg(feature = "flac-format")]
     /// Save audio to FLAC file - lossless quality for when you're getting FLAC!
-    pub fn save_flac(&self, path: &str, audio: &[f32]) -> Result<(), String> {
-        use flac::StreamWriter;
-
-        // Ensure directory exists
-        if let Some(parent) = Path::new(path).parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
-        }
-
-        // Convert to i32 samples (24-bit audio in 32-bit container)
-        let samples: Vec<i32> = audio.iter()
-            .map(|&s| (s * 8388607.0).clamp(-8388608.0, 8388607.0) as i32)
-            .collect();
-
-        // Create FLAC writer
-        let file = File::create(path)
-            .map_err(|e| format!("Failed to create file: {}", e))?;
-
-        let mut writer = StreamWriter::new(file, 24)
-            .map_err(|e| format!("Failed to create FLAC writer: {:?}", e))?;
-
-        // Write samples
-        for sample in samples {
-            writer.write_sample(sample)
-                .map_err(|e| format!("Failed to write FLAC sample: {:?}", e))?;
-        }
-
-        // Finalize
-        writer.finalize()
-            .map_err(|e| format!("Failed to finalize FLAC: {:?}", e))?;
-
-        Ok(())
+    /// Note: FLAC encoding requires additional dependencies. For now, use WAV for lossless.
+    pub fn save_flac(&self, path: &str, _audio: &[f32]) -> Result<(), String> {
+        // The flac crate is for decoding, not encoding
+        // For lossless audio, use WAV format instead
+        Err(format!(
+            "FLAC encoding not yet supported. Save as WAV for lossless: {}",
+            path.replace(".flac", ".wav")
+        ))
     }
 
     /// Save audio in any supported format based on file extension
