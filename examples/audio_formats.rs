@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let start = Instant::now();
 
             let result = match *format {
-                "wav" => tts.save_wav(&filename, &audio),
+                "wav" => tts.save_wav(filename.as_str(), &audio),
 
                 #[cfg(feature = "mp3")]
                 "mp3" => tts.save_mp3(&filename, &audio),
