@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "wav" => tts.save_wav(filename.as_str(), &audio),
 
                 #[cfg(feature = "mp3")]
-                "mp3" => tts.save_mp3(filename.as_str(), &audio),
+                "mp3" => tts.save_mp3(&filename, &audio),
                 #[cfg(not(feature = "mp3"))]
                 "mp3" => {
                     println!("  MP3    | [disabled] |           | Enable with --features mp3");
