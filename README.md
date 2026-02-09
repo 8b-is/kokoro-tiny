@@ -21,6 +21,7 @@
 - 🔄 **Streaming Mode** - Unlimited speech with interruption support
 - 🧠 **MEM8 Integration** - Consciousness layer for AI memory persistence
 - 📱 **CLI Tool** - `kokoro-speak` binary for alerts and announcements
+- 🤖 **MCP Server** ⭐ NEW! - AI collaboration with voice (Claude can speak to you!)
 
 ---
 
@@ -193,6 +194,103 @@ kokoro-tiny = { version = "0.2.0", features = ["full"] }
 
 # CUDA acceleration
 kokoro-tiny = { version = "0.2.0", features = ["cuda"] }
+```
+
+---
+
+## 🤖 MCP Server for AI Collaboration ⭐ NEW!
+
+kokoro-tiny now includes an MCP (Model Context Protocol) server that enables AI assistants like Claude to speak directly to you!
+
+### What This Enables
+
+**AI with Voice** - Claude can:
+- 🔊 Get your attention with audio alerts
+- 🎉 Celebrate successes with encouraging voice
+- 📊 Provide status updates while you work
+- ⚠️ Alert you to important findings
+- 💬 Speak summaries and explanations
+
+**Example Interaction:**
+```
+You: "Claude, help me debug this code"
+
+Claude: *analyzes*
+        🔊 "Hey! I found the issue in line 42!"
+        
+You: *looks up from other work*
+
+Claude: *after you fix it*
+        🔊 "Perfect! All tests passing. Incredible work!"
+```
+
+### Installation
+
+**1. Build the MCP server:**
+```bash
+cargo install --path . --features playback --bin kokoro-mcp
+```
+
+**2. Add to Claude Desktop config:**
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or equivalent:
+```json
+{
+  "mcpServers": {
+    "kokoro-tts": {
+      "command": "kokoro-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+**3. Restart Claude Desktop**
+
+Now Claude can use these tools:
+- `speak_to_user` - Speak messages with specific voices
+- `speak_with_emotion` - Auto-select voice by emotion
+- `list_voices` - See available voices
+- `synthesize_to_file` - Save audio to file
+
+### Voice Emotions
+
+Claude will automatically choose voices based on context:
+
+| Emotion | Voice | Example Use |
+|---------|-------|-------------|
+| happy, success | af_bella | "All tests passed!" |
+| alert, error | am_adam | "Build failed!" |
+| info, friendly | af_sky | "Analysis complete." |
+| technical | af_nicole | "Memory usage: 42%" |
+| professional | am_michael | "Here's the solution..." |
+| warm, encouraging | af_heart | "Great progress!" |
+
+### Example MCP Tool Calls
+
+**Speak to user:**
+```javascript
+await use_mcp_tool({
+  server_name: "kokoro-tts",
+  tool_name: "speak_to_user",
+  arguments: {
+    text: "Build completed successfully!",
+    voice: "af_bella",
+    speed: 1.0
+  }
+});
+```
+
+**Speak with emotion:**
+```javascript
+await use_mcp_tool({
+  server_name: "kokoro-tts",
+  tool_name: "speak_with_emotion",
+  arguments: {
+    text: "Warning: potential memory leak detected.",
+    emotion: "alert"
+  }
+});
 ```
 
 ---
