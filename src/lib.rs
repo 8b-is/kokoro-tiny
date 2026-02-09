@@ -117,7 +117,15 @@ fn pick_preferred_device(devices: &[String]) -> Option<String> {
     // Platform-aware preference heuristics. Prefer "Voice"/"AirPods"/"iPhone" style names on macOS/iOS/Android.
     // 1) If a device explicitly contains "Voice" or "Built-in Output" or "iPhone", pick it.
     // 2) Else prefer names containing common headset keywords.
-    let keywords = ["Voice", "Built-in", "iPhone", "AirPods", "Headphones", "Headset", "Phone"];
+    let keywords = [
+        "Voice",
+        "Built-in",
+        "iPhone",
+        "AirPods",
+        "Headphones",
+        "Headset",
+        "Phone",
+    ];
 
     for kw in &keywords {
         if let Some(d) = devices.iter().find(|d| d.contains(kw)) {
@@ -126,7 +134,10 @@ fn pick_preferred_device(devices: &[String]) -> Option<String> {
     }
 
     // Fallback: pick the first device that looks like a system default (not "Unknown")
-    devices.iter().find(|d| !d.to_lowercase().contains("unknown")).cloned()
+    devices
+        .iter()
+        .find(|d| !d.to_lowercase().contains("unknown"))
+        .cloned()
 }
 
 /// Main TTS engine struct
@@ -412,21 +423,35 @@ impl TtsEngine {
     ///
     /// Example:
     /// `tts.synthesize_with("Hello", SynthesizeOptions::default().voice("af_sky").speed(1.1))`
-    pub fn synthesize_with(&mut self, text: &str, opts: SynthesizeOptions) -> Result<Vec<f32>, String> {
+    pub fn synthesize_with(
+        &mut self,
+        text: &str,
+        opts: SynthesizeOptions,
+    ) -> Result<Vec<f32>, String> {
         let voice_opt = opts.voice.as_deref();
         self.synthesize_with_options(text, voice_opt, opts.speed, opts.gain)
     }
 
     /// Process long text by splitting into chunks (alias for backwards compatibility)
     /// This method exists for API compatibility - synthesize() already handles long text automatically
-    pub fn process_long_text(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<Vec<f32>, String> {
+    pub fn process_long_text(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f32>,
+    ) -> Result<Vec<f32>, String> {
         // Forward to speed-aware variant (use default if None)
         self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED))
     }
 
     /// Synthesize speech from text with validation warnings (backwards compatibility)
     /// Returns both the audio and any warnings about the text
-    pub fn synthesize_with_warnings(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<(Vec<f32>, Vec<String>), String> {
+    pub fn synthesize_with_warnings(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f32>,
+    ) -> Result<(Vec<f32>, Vec<String>), String> {
         let mut warnings = Vec::new();
 
         if text.is_empty() {
@@ -434,7 +459,10 @@ impl TtsEngine {
         }
 
         if text.len() > 10000 {
-            warnings.push(format!("Very long text ({} chars) may take a while to process", text.len()));
+            warnings.push(format!(
+                "Very long text ({} chars) may take a while to process",
+                text.len()
+            ));
         }
 
         let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED))?;

@@ -29,7 +29,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Old API style (synthesize_with_warnings)
     println!("\n4️⃣ Testing old synthesize_with_warnings(text, voice, Some(speed)):");
     let (audio4, warnings) = tts.synthesize_with_warnings(text, Some("af_sky"), Some(1.0))?;
-    println!("   ✅ Works! {} samples, {} warnings", audio4.len(), warnings.len());
+    println!(
+        "   ✅ Works! {} samples, {} warnings",
+        audio4.len(),
+        warnings.len()
+    );
 
     // New API style (just 2 params - for those who migrated)
     println!("\n5️⃣ Testing new synthesize_with_speed(text, voice, speed):");

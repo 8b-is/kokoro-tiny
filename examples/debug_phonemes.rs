@@ -7,7 +7,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = std::env::var("PIPER_ESPEAKNG_DATA_DIRECTORY") {
         println!("⚠️  PIPER_ESPEAKNG_DATA_DIRECTORY not set: {}", e);
         println!("Setting to: /opt/homebrew/Cellar/espeak-ng/1.52.0/share");
-        std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", "/opt/homebrew/Cellar/espeak-ng/1.52.0/share");
+        std::env::set_var(
+            "PIPER_ESPEAKNG_DATA_DIRECTORY",
+            "/opt/homebrew/Cellar/espeak-ng/1.52.0/share",
+        );
     }
 
     let text = "Hello world";
