@@ -47,7 +47,8 @@ use ort::{
 
 #[cfg(feature = "playback")]
 use rodio::{Decoder, OutputStream, Sink};
-#[cfg(feature = "playback")]
+
+// Cursor is used for in-memory audio operations, not just playback
 use std::io::Cursor;
 
 #[cfg(feature = "ducking")]

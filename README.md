@@ -35,27 +35,50 @@ Add to your `Cargo.toml`:
 kokoro-tiny = "0.2.0"
 ```
 
-Or with specific features:
+**Note**: The default build has NO system dependencies - it only generates WAV files.
+For audio playback, enable the `playback` feature (requires ALSA on Linux):
 
 ```toml
 [dependencies]
-kokoro-tiny = { version = "0.2.0", features = ["playback", "mp3", "ducking"] }
+kokoro-tiny = { version = "0.2.0", features = ["playback"] }
+```
+
+Or build with playback enabled:
+```bash
+cargo build --features playback
+```
+
+For full functionality (playback, ducking, all formats):
+```toml
+[dependencies]
+kokoro-tiny = { version = "0.2.0", features = ["full"] }
 ```
 
 ### System Requirements
 
-**Linux/Ubuntu:**
+**All Platforms (Required):**
 ```bash
-sudo apt install espeak-ng libasound2-dev
-```
+# Linux/Ubuntu
+sudo apt install espeak-ng
 
-**macOS:**
-```bash
+# macOS
 brew install espeak-ng
+
+# Windows
+# Download and install from: https://github.com/espeak-ng/espeak-ng/releases
 ```
 
-**Windows:**
-Download and install espeak-ng from: https://github.com/espeak-ng/espeak-ng/releases
+**Optional - For Audio Playback Feature:**
+
+If you enable the `playback` feature, additional system libraries are needed:
+
+```bash
+# Linux/Ubuntu - for playback feature only
+sudo apt install libasound2-dev
+
+# macOS - no additional deps needed
+# Windows - no additional deps needed
+```
 
 ### Basic Usage
 
@@ -132,24 +155,33 @@ let audio = tts.synthesize("Blended voice", Some("af_sky.6+af_nicole.4"))?;
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `playback` | ✅ | Direct audio playback via rodio/cpal |
-| `ducking` | ✅ | Audio ducking - reduces other audio during TTS |
+| `playback` | ❌ | Direct audio playback via rodio/cpal (requires ALSA on Linux) |
+| `ducking` | ❌ | Audio ducking - reduces other audio during TTS |
 | `mp3` | ❌ | MP3 encoding support |
 | `opus-format` | ❌ | OPUS audio format |
 | `cuda` | ❌ | CUDA acceleration for ONNX Runtime |
 | `all-formats` | ❌ | Enables mp3 + opus-format |
+| `full` | ❌ | Enables playback + ducking + all-formats |
+
+**Default Build**: No features enabled - generates WAV files only, no system dependencies!
 
 **Examples:**
 
 ```toml
-# Default features (playback + ducking)
+# Default - WAV generation only (no system dependencies!)
 kokoro-tiny = "0.2.0"
+
+# With playback support (requires ALSA on Linux)
+kokoro-tiny = { version = "0.2.0", features = ["playback"] }
 
 # Minimal (no playback, just synthesis)
 kokoro-tiny = { version = "0.2.0", default-features = false }
 
-# All audio formats
+# All audio formats (no playback)
 kokoro-tiny = { version = "0.2.0", features = ["all-formats"] }
+
+# Full functionality (playback + ducking + all formats)
+kokoro-tiny = { version = "0.2.0", features = ["full"] }
 
 # CUDA acceleration
 kokoro-tiny = { version = "0.2.0", features = ["cuda"] }
