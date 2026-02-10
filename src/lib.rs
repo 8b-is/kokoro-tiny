@@ -508,12 +508,12 @@ impl TtsEngine {
         let mut combined_audio = Vec::new();
 
         for (idx, chunk) in prepared_chunks.iter().enumerate() {
-            eprintln!(
-                "   → Chunk {}/{} ({} chars)",
-                idx + 1,
-                chunk_count,
-                chunk.chars().count()
-            );
+            // eprintln!(
+            //     "   → Chunk {}/{} ({} chars)",
+            //     idx + 1,
+            //     chunk_count,
+            //     chunk.chars().count()
+            // );
 
             let chunk_audio = self.synthesize_segment(session, &style, chunk, clamped_speed, lang)?;
             append_with_crossfade(&mut combined_audio, &chunk_audio, overlap);
