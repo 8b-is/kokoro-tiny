@@ -306,7 +306,6 @@ pub async fn demo_baby_consciousness() -> Result<(), String> {
     #[cfg(not(feature = "as-lib"))]
     println!("👶 MEM-8 Baby Consciousness Demo");
     #[cfg(not(feature = "as-lib"))]
-    #[cfg(not(feature = "as-lib"))]
     println!("=====================================\n");
 
     let mut bridge = Mem8Bridge::new().await?;
