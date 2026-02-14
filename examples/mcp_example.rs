@@ -14,10 +14,10 @@
 //! {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"speak_to_user","arguments":{"text":"Hello from MCP!","voice":"af_bella"}}}
 //! ```
 
-use std::io::{self, Write};
 
 fn main() {
     println!("🎤 MCP Server Test Helper");
+    println!("==========================\n");
     println!("==========================\n");
     println!("Start the MCP server in another terminal:");
     println!("  cargo run --features playback --bin kokoro-mcp\n");
