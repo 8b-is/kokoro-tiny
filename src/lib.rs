@@ -1273,7 +1273,7 @@ self.engine
         // Simple echo with slightly different intonation
         let echo_speed = self.speed * 1.1; // Slightly faster for echo
         self.engine
-            .synthesize_with_options(text, Some(&self.voice), echo_speed, self.gain, Some(DEFAULT_LANG))
+            .synthesize_with_options(text, Some(&self.voice), echo_speed, self.gain, Some(&self.lang))
     }
 
     /// Grow vocabulary - increase max words as baby learns
