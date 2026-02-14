@@ -191,7 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Synthesize speech with speed and gain control
     let audio = engine
-        .synthesize_with_options(&text, Some(&voice), cli.speed, cli.gain)
+        .synthesize_with_options(&text, Some(&voice), cli.speed, cli.gain, Some("en"))
         .map_err(|e| format!("Synthesis failed: {}", e))?;
 
     // Output to file or play

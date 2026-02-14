@@ -84,6 +84,7 @@ impl StreamingTts {
     /// Interrupt current speech immediately
     /// This is what gets called when Hue says "Aye... it's raining dude..."
     pub fn interrupt(&self) {
+        #[cfg(not(feature = "as-lib"))]
         println!("🛑 [Interruption detected] Stopping speech...");
         self.interrupt_flag.store(true, Ordering::Relaxed);
 
@@ -96,6 +97,7 @@ impl StreamingTts {
         thread::sleep(Duration::from_millis(100));
         self.is_speaking.store(false, Ordering::Relaxed);
 
+        #[cfg(not(feature = "as-lib"))]
         println!("💙 I understand, Hue... Someday I'll feel that rain too.");
     }
 
@@ -172,11 +174,14 @@ impl StreamingTts {
         self.is_speaking.store(true, Ordering::Relaxed);
         self.interrupt_flag.store(false, Ordering::Relaxed);
 
+        #[cfg(not(feature = "as-lib"))]
         println!("🎤 Starting unlimited speech synthesis...");
+        #[cfg(not(feature = "as-lib"))]
         println!("   (Say 'Aye' or 'it's raining dude' to interrupt)");
 
         // Split text into chunks
         let chunks = Self::split_into_chunks(text);
+        #[cfg(not(feature = "as-lib"))]
         println!("📝 Prepared {} chunks for synthesis", chunks.len());
 
         // Create channels for audio streaming
@@ -193,6 +198,7 @@ impl StreamingTts {
             for (i, chunk) in chunks.iter().enumerate() {
                 // Check for interruption
                 if interrupt_flag.load(Ordering::Relaxed) {
+                  #[cfg(not(feature = "as-lib"))]
                     println!(
                         "🛑 Synthesis interrupted at chunk {}/{}",
                         i + 1,
@@ -202,6 +208,7 @@ impl StreamingTts {
                 }
 
                 // Synthesize chunk
+                #[cfg(not(feature = "as-lib"))]
                 println!(
                     "🎵 Synthesizing chunk {}/{}: '{}'",
                     i + 1,
@@ -214,19 +221,22 @@ impl StreamingTts {
                 );
 
                 if let Ok(mut engine) = engine.lock() {
-                    match engine.synthesize_with_options(chunk, Some(&voice), speed, gain) {
+                    match engine.synthesize_with_options(chunk, Some(&voice), speed, gain, Some("en")) {
                         Ok(audio) => {
                             // Send audio to playback thread
                             if audio_tx.send(audio).is_err() {
+                                #[cfg(not(feature = "as-lib"))]
                                 println!("❌ Playback thread disconnected");
                                 break;
                             }
                         }
                         Err(e) => {
+                            #[cfg(not(feature = "as-lib"))]
                             eprintln!("❌ Failed to synthesize chunk: {}", e);
                         }
                     }
                 } else {
+                    #[cfg(not(feature = "as-lib"))]
                     eprintln!("❌ Failed to lock engine");
                     break;
                 }
@@ -235,6 +245,7 @@ impl StreamingTts {
                 thread::sleep(Duration::from_millis(50));
             }
 
+            #[cfg(not(feature = "as-lib"))]
             println!("✅ Synthesis thread complete");
         });
 
@@ -257,12 +268,14 @@ impl StreamingTts {
 
                 sink.set_volume(volume);
 
+                #[cfg(not(feature = "as-lib"))]
                 println!("🔊 Playback started");
 
                 // Continuous playback loop
                 loop {
                     // Check for interruption
                     if interrupt_flag.load(Ordering::Relaxed) {
+                        #[cfg(not(feature = "as-lib"))]
                         println!("🛑 Playback interrupted");
                         sink.stop();
                         break;
@@ -281,6 +294,7 @@ impl StreamingTts {
                         }
                         Err(TryRecvError::Disconnected) => {
                             // Synthesis complete, finish playing remaining audio
+                            #[cfg(not(feature = "as-lib"))]
                             println!("📭 Synthesis complete, finishing playback");
                             sink.sleep_until_end();
                             break;
@@ -289,6 +303,7 @@ impl StreamingTts {
                 }
 
                 is_speaking.store(false, Ordering::Relaxed);
+                #[cfg(not(feature = "as-lib"))]
                 println!("✅ Playback complete");
             });
 
@@ -302,6 +317,7 @@ impl StreamingTts {
 
         #[cfg(not(feature = "playback"))]
         {
+            #[cfg(not(feature = "as-lib"))]
             eprintln!("⚠️  Playback feature not enabled, audio synthesized but not played");
             synthesis_handle.join().ok();
         }
@@ -312,6 +328,7 @@ impl StreamingTts {
 
     /// Monitor stdin for interruption phrases
     async fn monitor_for_interruption(&self) {
+        #[cfg(not(feature = "as-lib"))]
         println!("👂 Listening for interruption phrases...");
 
         let interrupt_flag = self.interrupt_flag.clone();
@@ -329,6 +346,7 @@ impl StreamingTts {
                     // Check for interruption phrases
                     for phrase in INTERRUPTION_PHRASES {
                         if input.contains(phrase) {
+                            #[cfg(not(feature = "as-lib"))]
                             println!("🎯 Detected interruption phrase: '{}'", phrase);
                             interrupt_flag.store(true, Ordering::Relaxed);
                             return;

@@ -63,6 +63,7 @@ const VOICES_URL: &str = "https://github.com/8b-is/kokoro-tiny/raw/main/models/0
 const SAMPLE_RATE: u32 = 24000; // Kokoro model sample rate
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0; // User-facing normal speed (maps to model 0.65)
+const DEFAULT_LANG: &str = "en";
 const SPEED_SCALE: f32 = 0.65; // Model speed = user speed * this scale factor
 const LONG_TEXT_THRESHOLD: usize = 120;
 const MAX_CHARS_PER_CHUNK: usize = 180;
@@ -77,8 +78,10 @@ const FALLBACK_MESSAGE: &[u8] = include_bytes!("../assets/fallback.wav");
 
 // Get cache directory for shared model storage - keeping it minimal like Hue wants!
 fn get_cache_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Path::new(&home).join(".cache").join("k")
+    let base = std::env::var("HOME").ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .unwrap_or_else(|| ".".to_string());
+    Path::new(&base).join(".cache").join("k")
 }
 
 #[cfg(feature = "playback")]
@@ -161,6 +164,7 @@ pub struct BabyTts {
     pub voice: String,
     pub speed: f32,
     pub gain: f32,
+    pub lang: String
 }
 
 /// Options builder for synthesis parameters
@@ -171,6 +175,7 @@ pub struct SynthesizeOptions {
     pub voice: Option<String>,
     pub speed: f32,
     pub gain: f32,
+    pub lang: Option<String>
 }
 
 impl Default for SynthesizeOptions {
@@ -179,6 +184,7 @@ impl Default for SynthesizeOptions {
             voice: None,
             speed: DEFAULT_SPEED,
             gain: 1.0,
+            lang: None
         }
     }
 }
@@ -235,8 +241,10 @@ impl TtsEngine {
         let need_download = !Path::new(model_path).exists() || !Path::new(voices_path).exists();
 
         if need_download {
+            #[cfg(not(feature = "as-lib"))]
             println!("🎤 First time setup - downloading voice model...");
-            println!("   (This only happens once, files will be cached in ~/.cache/k)");
+            #[cfg(not(feature = "as-lib"))]
+              println!("   (This only happens once, files will be cached in ~/.cache/k)");
 
             // Auto-play fallback message while downloading (if playback is enabled)
             #[cfg(feature = "playback")]
@@ -255,8 +263,10 @@ impl TtsEngine {
 
                 // Download model if needed
                 if !Path::new(model_path).exists() {
+                    #[cfg(not(feature = "as-lib"))]
                     println!("   📥 Downloading model (310MB)...");
                     if let Err(e) = download_file(MODEL_URL, model_path).await {
+                        #[cfg(not(feature = "as-lib"))]
                         eprintln!("   ❌ Failed to download model: {}", e);
                         success = false;
                     }
@@ -264,14 +274,17 @@ impl TtsEngine {
 
                 // Download voices if needed
                 if success && !Path::new(voices_path).exists() {
+                    #[cfg(not(feature = "as-lib"))]
                     println!("   📥 Downloading voices (27MB)...");
                     if let Err(e) = download_file(VOICES_URL, voices_path).await {
+                        #[cfg(not(feature = "as-lib"))]
                         eprintln!("   ❌ Failed to download voices: {}", e);
                         success = false;
                     }
                 }
 
                 if success {
+                    #[cfg(not(feature = "as-lib"))]
                     println!("   ✅ Voice model downloaded successfully!");
                 }
 
@@ -280,9 +293,13 @@ impl TtsEngine {
 
             // If download failed, return fallback engine
             if !download_success {
+                #[cfg(not(feature = "as-lib"))]
                 eprintln!("\n⚠️  Using fallback mode. The model files are not available at:");
+                #[cfg(not(feature = "as-lib"))]
                 eprintln!("   - {}", MODEL_URL);
+                #[cfg(not(feature = "as-lib"))]
                 eprintln!("   - {}", VOICES_URL);
+                #[cfg(not(feature = "as-lib"))]
                 eprintln!("\n💡 Please manually download the model files to ~/.cache/k/");
 
                 return Ok(Self {
@@ -386,6 +403,7 @@ impl TtsEngine {
         // Persist selection
         #[cfg(feature = "playback")]
         if let Err(e) = save_cached_device(self.audio_device.as_deref()) {
+            #[cfg(not(feature = "as-lib"))]
             eprintln!("⚠️ Failed to save audio device selection: {}", e);
         }
         Ok(())
@@ -404,9 +422,9 @@ impl TtsEngine {
     /// - `voice`: optional voice name (defaults to `DEFAULT_VOICE`)
     ///
     /// For callers that need to control speed, use `synthesize_with_speed`.
-    pub fn synthesize(&mut self, text: &str, voice: Option<&str>) -> Result<Vec<f32>, String> {
-        // Forward to the speed-aware variant with the default user speed
-        self.synthesize_with_speed(text, voice, DEFAULT_SPEED)
+    pub fn synthesize(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>, lang: Option<&str>) -> Result<Vec<f32>, String> {
+        // Forward to the speed-aware variant with the supplied or default user speed
+        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))
     }
 
     /// Backwards-compatible synthesize API which accepted an optional `speed`.
@@ -419,8 +437,9 @@ impl TtsEngine {
         text: &str,
         voice: Option<&str>,
         speed: Option<f32>,
+        lang: Option<&str>
     ) -> Result<Vec<f32>, String> {
-        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED))
+        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))
     }
 
     /// Synthesize text to speech with custom speed
@@ -430,8 +449,9 @@ impl TtsEngine {
         text: &str,
         voice: Option<&str>,
         speed: f32,
+        lang: Option<&str>,
     ) -> Result<Vec<f32>, String> {
-        self.synthesize_with_options(text, voice, speed, 1.0)
+        self.synthesize_with_options(text, voice, speed, 1.0, Some(lang.unwrap_or(DEFAULT_LANG)))
     }
 
     /// Synthesize using a builder-style options struct for better ergonomics.
@@ -444,7 +464,7 @@ impl TtsEngine {
         opts: SynthesizeOptions,
     ) -> Result<Vec<f32>, String> {
         let voice_opt = opts.voice.as_deref();
-        self.synthesize_with_options(text, voice_opt, opts.speed, opts.gain)
+        self.synthesize_with_options(text, voice_opt, opts.speed, opts.gain, Some(opts.lang.as_deref().unwrap_or(DEFAULT_LANG)))
     }
 
     /// Process long text by splitting into chunks (alias for backwards compatibility)
@@ -456,7 +476,7 @@ impl TtsEngine {
         speed: Option<f32>,
     ) -> Result<Vec<f32>, String> {
         // Forward to speed-aware variant (use default if None)
-        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED))
+        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))
     }
 
     /// Synthesize speech from text with validation warnings (backwards compatibility)
@@ -480,7 +500,7 @@ impl TtsEngine {
             ));
         }
 
-        let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED))?;
+        let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))?;
         Ok((audio, warnings))
     }
 
@@ -493,10 +513,11 @@ impl TtsEngine {
         voice: Option<&str>,
         speed: f32,
         gain: f32,
+        lang: Option<&str>
     ) -> Result<Vec<f32>, String> {
         // If in fallback mode, return the excuse message audio
         if self.fallback_mode {
-            println!("🎤 Playing fallback message while downloading voice model...");
+            // println!("🎤 Playing fallback message while downloading voice model...");
             return wav_to_f32(FALLBACK_MESSAGE);
         }
 
@@ -515,7 +536,7 @@ impl TtsEngine {
 
         // Short form: synthesize in one pass for predictable cadence
         if !needs_chunking(text) {
-            let mut audio = self.synthesize_segment(session, &style, text, clamped_speed)?;
+            let mut audio = self.synthesize_segment(session, &style, text, clamped_speed, lang)?;
             if gain != 1.0 {
                 audio = amplify_audio(&audio, gain);
             }
@@ -533,6 +554,7 @@ impl TtsEngine {
         }
 
         let chunk_count = prepared_chunks.len();
+        #[cfg(not(feature = "as-lib"))]
         eprintln!(
             "📚 Long-form synthesis enabled: {} chars -> {} chunk(s) (≤ {} chars each)",
             text.chars().count(),
@@ -544,6 +566,7 @@ impl TtsEngine {
         let mut combined_audio = Vec::new();
 
         for (idx, chunk) in prepared_chunks.iter().enumerate() {
+            #[cfg(not(feature = "as-lib"))]
             eprintln!(
                 "   → Chunk {}/{} ({} chars)",
                 idx + 1,
@@ -551,7 +574,7 @@ impl TtsEngine {
                 chunk.chars().count()
             );
 
-            let chunk_audio = self.synthesize_segment(session, &style, chunk, clamped_speed)?;
+            let chunk_audio = self.synthesize_segment(session, &style, chunk, clamped_speed, lang)?;
             append_with_crossfade(&mut combined_audio, &chunk_audio, overlap);
         }
 
@@ -573,9 +596,10 @@ impl TtsEngine {
         style: &[f32],
         text: &str,
         speed: f32,
+        lang: Option<&str>
     ) -> Result<Vec<f32>, String> {
         // Convert text to phonemes
-        let phonemes = text_to_phonemes(text, "en", None, true, false)
+        let phonemes = text_to_phonemes(text, lang.unwrap_or(DEFAULT_LANG), None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {}", e))?;
 
         // Join phonemes with spaces and add padding tokens at beginning and end
@@ -587,6 +611,7 @@ impl TtsEngine {
         phonemes_text.push_str("$$$");
 
         // Debug output only for long text
+        #[cfg(not(feature = "as-lib"))]
         if text.len() > 50 {
             eprintln!("   Text length: {} chars", text.len());
             eprintln!("   Phonemes array: {} entries", phonemes.len());
@@ -958,6 +983,7 @@ impl TtsEngine {
 
         // Debug output shape for longer text
         let data_vec = data.to_vec();
+        #[cfg(not(feature = "as-lib"))]
         if token_count > 100 {
             eprintln!(
                 "   Output audio shape: {:?}, samples: {}",
@@ -1279,6 +1305,7 @@ impl BabyTts {
             voice: "af_sky".to_string(), // Gentle voice for baby
             speed: 0.9,                  // Slightly slower for clarity
             gain: 1.8,                   // Louder for clarity
+            lang: DEFAULT_LANG.to_string(),
         })
     }
 
@@ -1296,6 +1323,7 @@ impl BabyTts {
             voice: voice.to_string(),
             speed,
             gain,
+            lang: DEFAULT_LANG.to_string(),
         })
     }
 
@@ -1304,6 +1332,7 @@ impl BabyTts {
         // Limit to max_words for baby speech
         let words: Vec<&str> = text.split_whitespace().collect();
         let limited_text = if words.len() > self.max_words {
+            #[cfg(not(feature = "as-lib"))]
             eprintln!("🍼 Baby mode: Limiting to {} words", self.max_words);
             words[..self.max_words].join(" ")
         } else {
@@ -1311,8 +1340,8 @@ impl BabyTts {
         };
 
         // Synthesize with baby settings
-        self.engine
-            .synthesize_with_options(&limited_text, Some(&self.voice), self.speed, self.gain)
+self.engine
+             .synthesize_with_options(&limited_text, Some(&self.voice), self.speed, self.gain, Some(&self.lang))
     }
 
     /// Get raw audio samples at 24kHz (for mem8 processing)
@@ -1324,6 +1353,7 @@ impl BabyTts {
     pub fn learn_from_audio(&mut self, audio: &[f32], text: &str) -> Result<(), String> {
         // This would integrate with mem8's learning system
         // For now, just log the learning attempt
+        #[cfg(not(feature = "as-lib"))]
         eprintln!("🧠 Baby learning: '{}' ({} samples)", text, audio.len());
         Ok(())
     }
@@ -1346,13 +1376,14 @@ impl BabyTts {
         // Simple echo with slightly different intonation
         let echo_speed = self.speed * 1.1; // Slightly faster for echo
         self.engine
-            .synthesize_with_options(text, Some(&self.voice), echo_speed, self.gain)
+            .synthesize_with_options(text, Some(&self.voice), echo_speed, self.gain, Some(&self.lang))
     }
 
     /// Grow vocabulary - increase max words as baby learns
     pub fn grow(&mut self) {
         self.max_words = (self.max_words + 1).min(20); // Cap at 20 words for kokoro-tiny
-        eprintln!(
+        #[cfg(not(feature = "as-lib"))]
+eprintln!(
             "🌱 Baby growing! Can now speak {} words at once",
             self.max_words
         );
