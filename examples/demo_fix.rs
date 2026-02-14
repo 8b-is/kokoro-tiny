@@ -20,9 +20,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Synthesize with our fix
     let audio = tts.synthesize_with_speed(message, Some("af_sky"), 1.0)?;
 
-    println!("✅ Generated {} audio samples ({:.1} seconds)",
-             audio.len(),
-             audio.len() as f32 / 24000.0);
+    println!(
+        "✅ Generated {} audio samples ({:.1} seconds)",
+        audio.len(),
+        audio.len() as f32 / 24000.0
+    );
 
     // Save it first
     tts.save_wav("aye_celebrates.wav", &audio)?;

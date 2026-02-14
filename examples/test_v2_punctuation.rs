@@ -14,9 +14,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let audio = tts.synthesize(text, Some("af_sky"))?;
 
-    println!("\nAudio length: {} samples ({:.1}s)",
-             audio.len(),
-             audio.len() as f32 / 24000.0);
+    println!(
+        "\nAudio length: {} samples ({:.1}s)",
+        audio.len(),
+        audio.len() as f32 / 24000.0
+    );
 
     // Count max consecutive zeros (pauses)
     let mut max_zeros = 0;
@@ -30,9 +32,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Max consecutive silence: {} samples ({:.0}ms)",
-             max_zeros,
-             (max_zeros as f32 / 24000.0) * 1000.0);
+    println!(
+        "Max consecutive silence: {} samples ({:.0}ms)",
+        max_zeros,
+        (max_zeros as f32 / 24000.0) * 1000.0
+    );
 
     println!("\n🎯 Expected: ~250ms (6000 samples) for periods");
 

@@ -38,6 +38,9 @@ pub mod streaming;
 
 // MEM8 Voice synthesis - The future of Aye's voice!
 pub mod mem8_voice;
+
+// MCP Server module for AI collaboration
+pub mod mcp_server;
 use ndarray::{ArrayBase, IxDyn, OwnedRepr};
 use ndarray_npy::NpzReader;
 use ort::{
@@ -47,7 +50,8 @@ use ort::{
 
 #[cfg(feature = "playback")]
 use rodio::{Decoder, OutputStream, Sink};
-#[cfg(feature = "playback")]
+
+// Cursor is used for in-memory audio operations, not just playback
 use std::io::Cursor;
 
 #[cfg(feature = "ducking")]
@@ -117,7 +121,15 @@ fn pick_preferred_device(devices: &[String]) -> Option<String> {
     // Platform-aware preference heuristics. Prefer "Voice"/"AirPods"/"iPhone" style names on macOS/iOS/Android.
     // 1) If a device explicitly contains "Voice" or "Built-in Output" or "iPhone", pick it.
     // 2) Else prefer names containing common headset keywords.
-    let keywords = ["Voice", "Built-in", "iPhone", "AirPods", "Headphones", "Headset", "Phone"];
+    let keywords = [
+        "Voice",
+        "Built-in",
+        "iPhone",
+        "AirPods",
+        "Headphones",
+        "Headset",
+        "Phone",
+    ];
 
     for kw in &keywords {
         if let Some(d) = devices.iter().find(|d| d.contains(kw)) {
@@ -126,7 +138,10 @@ fn pick_preferred_device(devices: &[String]) -> Option<String> {
     }
 
     // Fallback: pick the first device that looks like a system default (not "Unknown")
-    devices.iter().find(|d| !d.to_lowercase().contains("unknown")).cloned()
+    devices
+        .iter()
+        .find(|d| !d.to_lowercase().contains("unknown"))
+        .cloned()
 }
 
 /// Main TTS engine struct
@@ -222,6 +237,17 @@ impl TtsEngine {
         if need_download {
             println!("🎤 First time setup - downloading voice model...");
             println!("   (This only happens once, files will be cached in ~/.cache/k)");
+
+            // Auto-play fallback message while downloading (if playback is enabled)
+            #[cfg(feature = "playback")]
+            {
+                // Spawn a thread to play the fallback message
+                thread::spawn(|| {
+                    if let Err(e) = play_fallback_message() {
+                        eprintln!("   ℹ️  Could not play fallback message: {}", e);
+                    }
+                });
+            }
 
             // Try to download the files
             let download_success = {
@@ -412,21 +438,35 @@ impl TtsEngine {
     ///
     /// Example:
     /// `tts.synthesize_with("Hello", SynthesizeOptions::default().voice("af_sky").speed(1.1))`
-    pub fn synthesize_with(&mut self, text: &str, opts: SynthesizeOptions) -> Result<Vec<f32>, String> {
+    pub fn synthesize_with(
+        &mut self,
+        text: &str,
+        opts: SynthesizeOptions,
+    ) -> Result<Vec<f32>, String> {
         let voice_opt = opts.voice.as_deref();
         self.synthesize_with_options(text, voice_opt, opts.speed, opts.gain)
     }
 
     /// Process long text by splitting into chunks (alias for backwards compatibility)
     /// This method exists for API compatibility - synthesize() already handles long text automatically
-    pub fn process_long_text(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<Vec<f32>, String> {
+    pub fn process_long_text(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f32>,
+    ) -> Result<Vec<f32>, String> {
         // Forward to speed-aware variant (use default if None)
         self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED))
     }
 
     /// Synthesize speech from text with validation warnings (backwards compatibility)
     /// Returns both the audio and any warnings about the text
-    pub fn synthesize_with_warnings(&mut self, text: &str, voice: Option<&str>, speed: Option<f32>) -> Result<(Vec<f32>, Vec<String>), String> {
+    pub fn synthesize_with_warnings(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f32>,
+    ) -> Result<(Vec<f32>, Vec<String>), String> {
         let mut warnings = Vec::new();
 
         if text.is_empty() {
@@ -434,7 +474,10 @@ impl TtsEngine {
         }
 
         if text.len() > 10000 {
-            warnings.push(format!("Very long text ({} chars) may take a while to process", text.len()));
+            warnings.push(format!(
+                "Very long text ({} chars) may take a while to process",
+                text.len()
+            ));
         }
 
         let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED))?;
@@ -982,6 +1025,66 @@ async fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+// Play the fallback message (used during first-time download)
+#[cfg(feature = "playback")]
+fn play_fallback_message() -> Result<(), String> {
+    eprintln!("   🔊 Playing welcome message...");
+    
+    // Decode the fallback WAV to audio samples
+    let audio = wav_to_f32(FALLBACK_MESSAGE)?;
+    
+    // Convert to WAV bytes for playback
+    let wav_data = samples_to_wav_bytes(&audio, SAMPLE_RATE)?;
+    
+    // Setup audio output with default device
+    let (_stream, stream_handle) = OutputStream::try_default()
+        .map_err(|e| format!("Failed to open audio stream: {}", e))?;
+    
+    // Create sink and play
+    let sink = Sink::try_new(&stream_handle)
+        .map_err(|e| format!("Failed to create audio sink: {}", e))?;
+    
+    let cursor = Cursor::new(wav_data);
+    let source = Decoder::new(cursor)
+        .map_err(|e| format!("Failed to decode audio: {}", e))?;
+    
+    sink.append(source);
+    sink.set_volume(0.8);
+    sink.sleep_until_end();
+    
+    Ok(())
+}
+
+// Helper function to convert audio samples to WAV bytes
+fn samples_to_wav_bytes(audio: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
+    let mut wav_data = Vec::new();
+    let mut cursor = Cursor::new(&mut wav_data);
+    
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    
+    let mut writer = hound::WavWriter::new(&mut cursor, spec)
+        .map_err(|e| format!("Failed to create WAV writer: {}", e))?;
+    
+    for &sample in audio {
+        let amplitude = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+        writer
+            .write_sample(amplitude)
+            .map_err(|e| format!("Failed to write sample: {}", e))?;
+    }
+    
+    writer
+        .finalize()
+        .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
+    
+    drop(cursor);
+    Ok(wav_data)
+}
+
 // Convert WAV bytes to f32 samples
 fn wav_to_f32(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
     let cursor = Cursor::new(wav_bytes);
@@ -990,7 +1093,7 @@ fn wav_to_f32(wav_bytes: &[u8]) -> Result<Vec<f32>, String> {
 
     let samples: Result<Vec<f32>, _> = reader
         .samples::<i16>()
-        .map(|s| s.map(|sample| sample as f32 / 32768.0))
+        .map(|s: Result<i16, _>| s.map(|sample| sample as f32 / 32768.0))
         .collect();
 
     samples.map_err(|e| format!("Failed to read samples: {}", e))

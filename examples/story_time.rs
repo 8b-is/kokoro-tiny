@@ -22,9 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use the working v2 branch implementation with punctuation pauses
     let audio = tts.synthesize_with_speed(story, Some("af_sky"), 1.0)?;
 
-    println!("✅ Generated {} samples ({:.1}s)",
-             audio.len(),
-             audio.len() as f32 / 24000.0);
+    println!(
+        "✅ Generated {} samples ({:.1}s)",
+        audio.len(),
+        audio.len() as f32 / 24000.0
+    );
 
     // Save the story
     tts.save_wav("story_time.wav", &audio)?;

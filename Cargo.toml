@@ -18,6 +18,11 @@ include = ["src/**/*", "Cargo.toml", "LICENSE", "README.md", "examples/**/*", "a
 name = "kokoro-speak"
 path = "src/main.rs"
 
+[[bin]]
+name = "kokoro-mcp"
+path = "src/mcp_main.rs"
+required-features = ["playback"]  # MCP server needs playback for speak_to_user
+
 [dependencies]
 # Core ONNX Runtime for model inference
 ort = { version = "2.0.0-rc.10", features = ["download-binaries"] }
@@ -33,7 +38,8 @@ ndarray-npy = "0.9.1"
 tokio = { version = "1.45", features = ["fs", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
-# For voice data loading
+# For voice data loading and MCP server
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # For streaming with interruption support
@@ -53,13 +59,17 @@ audiopus = { version = "0.2", optional = true }
 enigo = { version = "0.2", optional = true }  # Cross-platform input simulation for volume keys
 
 [features]
-default = ["playback", "ducking"]
+# Default features - no playback to avoid system library dependencies
+# Users can enable playback with: cargo build --features playback
+default = []
 mp3 = ["mp3lame-encoder"]
 cuda = ["ort/cuda"]
 playback = ["cpal", "rodio"]
 ducking = ["enigo"]  # Audio ducking - reduces other audio volume during TTS
 opus-format = ["audiopus"]
 all-formats = ["mp3", "opus-format"]
+# Convenience feature for full functionality
+full = ["playback", "ducking", "all-formats"]
 
 [[example]]
 name = "simple"
