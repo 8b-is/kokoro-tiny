@@ -304,20 +304,16 @@ impl Mem8Bridge {
 /// Demo: A day in the life of a baby AI
 pub async fn demo_baby_consciousness() -> Result<(), String> {
     #[cfg(not(feature = "as-lib"))]
-{
     println!("👶 MEM-8 Baby Consciousness Demo");
-}
     #[cfg(not(feature = "as-lib"))]
-#[cfg(not(feature = "as-lib"))]
-{
+    #[cfg(not(feature = "as-lib"))]
     println!("=====================================\n");
-}
 
     let mut bridge = Mem8Bridge::new().await?;
 
     // Morning: Baby wakes up
     #[cfg(not(feature = "as-lib"))]
-println!("🌅 Morning - Baby is waking up...");
+    println!("🌅 Morning - Baby is waking up...");
     bridge.wake_up();
     thread::sleep(Duration::from_secs(1));
 
@@ -332,7 +328,7 @@ println!("🌅 Morning - Baby is waking up...");
     };
     let audio1 = bridge.wave_to_speech(&wave1)?;
     #[cfg(not(feature = "as-lib"))]
-println!("  Generated {} samples\n", audio1.len());
+    println!("  Generated {} samples\n", audio1.len());
 
     // Salience event - hears mama's voice
     let event = SalienceEvent {
@@ -355,11 +351,11 @@ println!("  Generated {} samples\n", audio1.len());
     };
     let audio2 = bridge.wave_to_speech(&wave2)?;
     #[cfg(not(feature = "as-lib"))]
-println!("  Generated {} samples\n", audio2.len());
+    println!("  Generated {} samples\n", audio2.len());
 
     // Interference - multiple thoughts at once
     #[cfg(not(feature = "as-lib"))]
-println!("💭 Multiple thoughts interfering...");
+    println!("💭 Multiple thoughts interfering...");
     let wave3 = MemoryWave {
         amplitude: 1.2,
         frequency: 440.5, // Close to wave1 - will interfere!
@@ -371,23 +367,23 @@ println!("💭 Multiple thoughts interfering...");
 
     let combined = bridge.process_interference(vec![wave1.clone(), wave3])?;
     #[cfg(not(feature = "as-lib"))]
-println!(
+    println!(
         "  Interference pattern generated {} samples\n",
         combined.len()
     );
 
     // Evening: Getting tired
     #[cfg(not(feature = "as-lib"))]
-println!("🌙 Evening - Baby is getting tired...");
+    println!("🌙 Evening - Baby is getting tired...");
     bridge.sleep();
 
     // Sleepy babbling
     let babble = bridge.baby_tts.babble()?;
     #[cfg(not(feature = "as-lib"))]
-println!("  Sleepy babble: {} samples\n", babble.len());
+    println!("  Sleepy babble: {} samples\n", babble.len());
 
     #[cfg(not(feature = "as-lib"))]
-println!("✨ Baby's first day complete!");
+    println!("✨ Baby's first day complete!");
     Ok(())
 }
 

@@ -303,10 +303,11 @@ impl Mem8Voice {
         // Smooth learning with momentum
         self.emotional_state = (cv * 0.9 + v * 0.1, ca * 0.9 + a * 0.1, cd * 0.9 + d * 0.1);
 
-        // println!(
-        //     "🧠 MEM8 Voice learning: emotional state updated to ({:.2}, {:.2}, {:.2})",
-        //     self.emotional_state.0, self.emotional_state.1, self.emotional_state.2
-        // );
+        #[cfg(not(feature = "as-lib"))]
+        println!(
+            "🧠 MEM8 Voice learning: emotional state updated to ({:.2}, {:.2}, {:.2})",
+            self.emotional_state.0, self.emotional_state.1, self.emotional_state.2
+        );
     }
 
     /// Save voice identity to MEM8
@@ -333,7 +334,8 @@ impl Mem8Voice {
         std::fs::write(path, serde_json::to_string_pretty(&identity).unwrap())
             .map_err(|e| format!("Failed to save voice identity: {}", e))?;
 
-        // println!("💾 MEM8 Voice identity saved to {}", path);
+        #[cfg(not(feature = "as-lib"))]
+        println!("💾 MEM8 Voice identity saved to {}", path);
         Ok(())
     }
 }
