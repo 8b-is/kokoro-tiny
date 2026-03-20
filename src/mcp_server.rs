@@ -11,7 +11,7 @@
 
 use crate::TtsEngine;
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 /// MCP Protocol version
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -94,10 +94,19 @@ impl McpServer {
         eprintln!("📡 Protocol version: {}", PROTOCOL_VERSION);
         eprintln!("🔊 Ready to provide audio collaboration!");
 
-        for line in self.stdin.by_ref().lines() {
-            let line = line.map_err(|e| format!("Failed to read line: {}", e))?;
-            
-            if line.trim().is_empty() {
+        loop {
+            let mut line = String::new();
+            match self.stdin.read_line(&mut line) {
+                Ok(0) => break, // EOF
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Failed to read line: {}", e);
+                    continue;
+                }
+            }
+
+            let line = line.trim();
+            if line.is_empty() {
                 continue;
             }
 
@@ -336,7 +345,7 @@ impl McpServer {
         eprintln!("🔊 Speaking: \"{}\" with voice {:?}", text, voice);
 
         // Synthesize audio
-        let audio = self.tts.synthesize_with_speed(text, voice, speed)
+        let audio = self.tts.synthesize_with_speed(text, voice, speed, None)
             .map_err(|e| McpError {
                 code: -32603,
                 message: format!("Synthesis failed: {}", e),
@@ -413,7 +422,7 @@ impl McpServer {
         eprintln!("😊 Speaking with emotion '{}': voice={}", emotion, voice);
 
         // Synthesize and play
-        let audio = self.tts.synthesize_with_speed(text, Some(voice), speed)
+        let audio = self.tts.synthesize_with_speed(text, Some(voice), speed, None)
             .map_err(|e| McpError {
                 code: -32603,
                 message: format!("Synthesis failed: {}", e),
@@ -514,7 +523,7 @@ impl McpServer {
         eprintln!("💾 Saving to file: {}", output_path);
 
         // Synthesize audio
-        let audio = self.tts.synthesize_with_speed(text, voice, speed)
+        let audio = self.tts.synthesize_with_speed(text, voice, speed, None)
             .map_err(|e| McpError {
                 code: -32603,
                 message: format!("Synthesis failed: {}", e),

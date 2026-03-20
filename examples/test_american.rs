@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Text: \"{}\"", text);
     println!("Voice: am_adam (American Male)\n");
 
-    let audio = tts.synthesize_with_speed(text, Some("am_adam"), 1.0)?;
+    let audio = tts.synthesize_with_speed(text, Some("am_adam"), 1.0, None)?;
 
     tts.save_wav("american_test.wav", &audio)?;
     println!("✅ Saved to american_test.wav");

@@ -54,6 +54,10 @@ use rodio::{Decoder, OutputStream, Sink};
 // Cursor is used for in-memory audio operations, not just playback
 use std::io::Cursor;
 
+// Async I/O for streaming downloads
+use tokio::io::AsyncWriteExt;
+use futures_util::StreamExt;
+
 #[cfg(feature = "ducking")]
 use enigo::{Enigo, Key, Keyboard, Settings};
 
@@ -75,6 +79,46 @@ const PAD_TOKEN: char = '$'; // Padding token for beginning/end of phonemes
 // Fallback audio message - "Excuse me, I lost my voice. Give me time to get it back."
 // This is a pre-generated minimal WAV file that can play while downloading
 const FALLBACK_MESSAGE: &[u8] = include_bytes!("../assets/fallback.wav");
+
+// Progress types for download tracking
+/// Progress information for downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    /// Number of bytes downloaded so far
+    pub bytes_downloaded: u64,
+    /// Total bytes to download
+    pub total_bytes: u64,
+    /// Which file is currently being downloaded
+    pub current_file: FileType,
+}
+
+impl Progress {
+    /// Returns the download percentage (0-100)
+    pub fn percent(&self) -> u32 {
+        if self.total_bytes == 0 {
+            return 100;
+        }
+        (self.bytes_downloaded as f64 / self.total_bytes as f64 * 100.0) as u32
+    }
+}
+
+/// Which file type is currently being downloaded
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileType {
+    /// The main ONNX model file
+    Model,
+    /// Voice pack file
+    Voices,
+}
+
+impl std::fmt::Display for FileType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileType::Model => write!(f, "model"),
+            FileType::Voices => write!(f, "voices"),
+        }
+    }
+}
 
 // Get cache directory for shared model storage - keeping it minimal like Hue wants!
 fn get_cache_dir() -> PathBuf {
@@ -354,6 +398,140 @@ impl TtsEngine {
         Ok(engine)
     }
 
+    /// Create engine with custom paths and optional progress callback.
+    ///
+    /// This method allows you to track download progress when initializing
+    /// the TTS engine.
+    pub async fn with_progress<P>(
+        model_path: &str,
+        voices_path: &str,
+        on_progress: P,
+    ) -> Result<Self, String>
+    where
+        P: Fn(Progress) + Clone + Send + Sync + 'static,
+    {
+        use bytes::Bytes;
+
+        if let Some(parent) = Path::new(model_path).parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create cache directory: {}", e))?;
+        }
+
+        let model_exists = Path::new(model_path).exists();
+        let voices_exists = Path::new(voices_path).exists();
+
+        if !model_exists || !voices_exists {
+            #[cfg(not(feature = "as-lib"))]
+            println!("🎤 Downloading voice model...");
+            #[cfg(not(feature = "as-lib"))]
+            println!("   (Files will be cached in ~/.cache/k)");
+
+            #[cfg(feature = "playback")]
+            {
+                thread::spawn(|| {
+                    if let Err(e) = play_fallback_message() {
+                        eprintln!("   ℹ️  Could not play fallback message: {}", e);
+                    }
+                });
+            }
+
+            let download_success = {
+                let mut success = true;
+
+                const MODEL_SIZE: u64 = 325_000_000;
+                const VOICES_SIZE: u64 = 28_000_000;
+
+                if !model_exists {
+                    #[cfg(not(feature = "as-lib"))]
+                    println!("   📥 Downloading model...");
+
+                    let on_progress = on_progress.clone();
+                    if let Err(e) = download_file_with_progress(
+                        MODEL_URL, model_path,
+                        Some(Box::new(move |p| on_progress(p))),
+                        MODEL_SIZE,
+                    ).await {
+                        #[cfg(not(feature = "as-lib"))]
+                        eprintln!("   ❌ Failed to download model: {}", e);
+                        success = false;
+                    }
+                }
+
+                if success && !voices_exists {
+                    #[cfg(not(feature = "as-lib"))]
+                    println!("   📥 Downloading voices...");
+
+                    let on_progress = on_progress.clone();
+                    if let Err(e) = download_file_with_progress(
+                        VOICES_URL, voices_path,
+                        Some(Box::new(move |p| on_progress(p))),
+                        VOICES_SIZE,
+                    ).await {
+                        #[cfg(not(feature = "as-lib"))]
+                        eprintln!("   ❌ Failed to download voices: {}", e);
+                        success = false;
+                    }
+                }
+
+                if success {
+                    #[cfg(not(feature = "as-lib"))]
+                    println!("   ✅ Voice model downloaded successfully!");
+                }
+
+                success
+            };
+
+            if !download_success {
+                #[cfg(not(feature = "as-lib"))]
+                eprintln!("\n⚠️  Using fallback mode.");
+                return Ok(Self {
+                    session: None,
+                    voices: HashMap::new(),
+                    vocab: build_vocab(),
+                    fallback_mode: true,
+                    #[cfg(feature = "playback")]
+                    audio_device: None,
+                });
+            }
+        }
+
+        let model_bytes =
+            std::fs::read(model_path).map_err(|e| format!("Failed to read model file: {}", e))?;
+        let session = Session::builder()
+            .map_err(|e| format!("Failed to create session builder: {}", e))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| format!("Failed to set optimization level: {}", e))?
+            .commit_from_memory(&model_bytes)
+            .map_err(|e| format!("Failed to load model: {}", e))?;
+
+        let voices = load_voices(voices_path)?;
+
+        let mut engine = Self {
+            session: Some(Arc::new(Mutex::new(session))),
+            voices,
+            vocab: build_vocab(),
+            fallback_mode: false,
+            #[cfg(feature = "playback")]
+            audio_device: None,
+        };
+
+        #[cfg(feature = "playback")]
+        {
+            if engine.audio_device.is_none() {
+                if let Some(cached) = load_cached_device() {
+                    engine.audio_device = Some(cached);
+                } else if let Ok(devs) = engine.list_audio_devices() {
+                    if let Some(pref) = pick_preferred_device(&devs) {
+                        let _ = save_cached_device(Some(&pref));
+                        engine.audio_device = Some(pref);
+                    }
+                }
+            }
+        }
+
+        Ok(engine)
+    }
+
     /// List all available voices
     pub fn voices(&self) -> Vec<String> {
         if self.fallback_mode {
@@ -476,7 +654,7 @@ impl TtsEngine {
         speed: Option<f32>,
     ) -> Result<Vec<f32>, String> {
         // Forward to speed-aware variant (use default if None)
-        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))
+        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), None)
     }
 
     /// Synthesize speech from text with validation warnings (backwards compatibility)
@@ -500,7 +678,7 @@ impl TtsEngine {
             ));
         }
 
-        let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))?;
+        let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), None)?;
         Ok((audio, warnings))
     }
 
@@ -1040,15 +1218,43 @@ fn load_voices(path: &str) -> Result<HashMap<String, Vec<f32>>, String> {
     Ok(voices)
 }
 
-// Download file from URL
-async fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let response = reqwest::get(url).await?;
-    let bytes = response.bytes().await?;
+// Download file with optional progress callback
+async fn download_file_with_progress(
+    url: &str,
+    path: &str,
+    progress_callback: Option<Box<dyn Fn(Progress) + Send + 'static>>,
+    expected_size: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use bytes::Bytes;
 
-    let mut file = File::create(path)?;
-    file.write_all(&bytes)?;
+    let client = reqwest::Client::new();
+    let response = client.get(url).send().await?;
+
+    let mut file = tokio::fs::File::create(path).await?;
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+
+    while let Some(item) = stream.next().await {
+        let chunk: Bytes = item?;
+        let chunk_len = chunk.len();
+        file.write_all(&chunk).await?;
+        downloaded += chunk_len as u64;
+
+        if let Some(ref callback) = progress_callback {
+            callback(Progress {
+                bytes_downloaded: downloaded,
+                total_bytes: expected_size,
+                current_file: FileType::Model,
+            });
+        }
+    }
 
     Ok(())
+}
+
+// Download file from URL
+async fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    download_file_with_progress(url, path, None, 0).await
 }
 
 // Play the fallback message (used during first-time download)
@@ -1453,5 +1659,32 @@ mod tests {
         let long = "This sentence is intentionally quite a bit longer than the \
                     short sample so that it exceeds the chunking threshold we set.";
         assert!(needs_chunking(long));
+    }
+
+    // Progress type tests
+    #[test]
+    fn progress_percent_calculation() {
+        let progress = Progress {
+            bytes_downloaded: 50_000_000,
+            total_bytes: 100_000_000,
+            current_file: FileType::Model,
+        };
+        assert_eq!(progress.percent(), 50);
+    }
+
+    #[test]
+    fn progress_percent_zero_total() {
+        let progress = Progress {
+            bytes_downloaded: 50,
+            total_bytes: 0,
+            current_file: FileType::Model,
+        };
+        assert_eq!(progress.percent(), 100);
+    }
+
+    #[test]
+    fn progress_file_type_display() {
+        assert_eq!(FileType::Model.to_string(), "model");
+        assert_eq!(FileType::Voices.to_string(), "voices");
     }
 }
