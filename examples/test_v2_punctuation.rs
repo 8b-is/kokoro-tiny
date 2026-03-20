@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Text: \"{}\"", text);
 
-    let audio = tts.synthesize(text, Some("af_sky"))?;
+    let audio = tts.synthesize(text, Some("af_sky"), None, None)?;
 
     println!(
         "\nAudio length: {} samples ({:.1}s)",

@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for speed in &[0.5, 0.85, 1.0] {
             println!("  Speed {}x:", speed);
 
-            match tts.synthesize_with_speed(phrase, None, *speed) {
+            match tts.synthesize_with_speed(phrase, None, *speed, None) {
                 Ok(audio) => {
                     let filename = format!("debug_{}_speed_{}.wav", i + 1, (speed * 100.0) as u32);
                     tts.save_wav(&filename, &audio)?;

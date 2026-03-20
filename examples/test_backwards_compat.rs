@@ -12,13 +12,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Old API style (3 parameters with speed)
     println!("1️⃣ Testing old synthesize(text, voice, Some(speed)):");
-    let audio1 = tts.synthesize_with_speed(text, Some("af_sky"), 1.0)?;
+    let audio1 = tts.synthesize_with_speed(text, Some("af_sky"), 1.0, None)?;
     println!("   ✅ Works! {} samples", audio1.len());
 
     // Old API style (3 parameters with None speed)
     println!("\n2️⃣ Testing old synthesize(text, voice, None):");
     // Older code passing None speed will be interpreted as default speed
-    let audio2 = tts.synthesize(text, Some("af_sky"))?;
+    let audio2 = tts.synthesize(text, Some("af_sky"), None, None)?;
     println!("   ✅ Works! {} samples", audio2.len());
 
     // Old API style (process_long_text)
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // New API style (just 2 params - for those who migrated)
     println!("\n5️⃣ Testing new synthesize_with_speed(text, voice, speed):");
-    let audio5 = tts.synthesize_with_speed(text, Some("af_sky"), 1.0)?;
+    let audio5 = tts.synthesize_with_speed(text, Some("af_sky"), 1.0, None)?;
     println!("   ✅ Works! {} samples", audio5.len());
 
     println!("\n🎉 ALL BACKWARDS COMPATIBILITY TESTS PASSED!");

@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for voice in &english_voices {
         println!("🔊 Voice: {}", voice);
 
-        match tts.synthesize(text, Some(voice)) {
+        match tts.synthesize(text, Some(voice), None, None) {
             Ok(audio) => {
                 let duration_secs = audio.len() as f32 / 24000.0;
                 println!(

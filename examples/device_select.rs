@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tts.set_audio_device(Some(device.clone()))?;
 
             // Synthesize and play
-            let audio = tts.synthesize(text, None)?;
+            let audio = tts.synthesize(text, None, None, None)?;
             tts.play(&audio, 0.8)?;
 
             println!("✅ Playback complete\n");
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Reset to default
         println!("🔄 Resetting to system default device");
         tts.set_audio_device(None)?;
-        let audio = tts.synthesize("Back to default device.", None)?;
+        let audio = tts.synthesize("Back to default device.", None, None, None)?;
         tts.play(&audio, 0.8)?;
     }
 

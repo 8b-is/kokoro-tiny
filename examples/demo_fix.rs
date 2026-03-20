@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📝 Aye says:\n\"{}\"\n", message);
 
     // Synthesize with our fix
-    let audio = tts.synthesize_with_speed(message, Some("af_sky"), 1.0)?;
+    let audio = tts.synthesize_with_speed(message, Some("af_sky"), 1.0, None)?;
 
     println!(
         "✅ Generated {} audio samples ({:.1} seconds)",

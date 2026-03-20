@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The library doesn't expose tokenize publicly, so let's trace what happens
     println!("Testing with actual synthesis...");
 
-    match tts.synthesize_with_speed(text, Some("af_sky"), 1.0) {
+    match tts.synthesize_with_speed(text, Some("af_sky"), 1.0, None) {
         Ok(audio) => {
             println!("✅ Synthesis succeeded!");
             println!(
