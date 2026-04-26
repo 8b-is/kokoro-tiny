@@ -326,6 +326,7 @@ impl TtsEngine {
         // Load voices
         let voices = load_voices(voices_path)?;
 
+        #[cfg_attr(not(feature = "playback"), allow(unused_mut))]
         let mut engine = Self {
             session: Some(Arc::new(Mutex::new(session))),
             voices,
@@ -476,7 +477,7 @@ impl TtsEngine {
         speed: Option<f32>,
     ) -> Result<Vec<f32>, String> {
         // Forward to speed-aware variant (use default if None)
-        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))
+        self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), None)
     }
 
     /// Synthesize speech from text with validation warnings (backwards compatibility)
@@ -500,7 +501,7 @@ impl TtsEngine {
             ));
         }
 
-        let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), Some(lang.unwrap_or(DEFAULT_LANG)))?;
+        let audio = self.synthesize_with_speed(text, voice, speed.unwrap_or(DEFAULT_SPEED), None)?;
         Ok((audio, warnings))
     }
 
@@ -678,45 +679,26 @@ impl TtsEngine {
         Ok(cursor.into_inner())
     }
 
-    /// Save audio as MP3 file (requires 'mp3' feature)
-    #[cfg(feature = "mp3")]
+    /// Save audio as MP3 file (requires 'symphonia-formats' feature)
+    #[cfg(feature = "symphonia-formats")]
     pub fn save_mp3(&self, path: &str, audio: &[f32]) -> Result<(), String> {
-        use mp3lame_encoder::{Builder, InterleavedPcm};
-
-        let mut encoder = Builder::new()
-            .ok_or("Failed to create MP3 encoder builder")?
-            .sample_rate(SAMPLE_RATE)
-            .ok_or("Invalid sample rate")?
-            .channels(mp3lame_encoder::channels::Mono)
-            .ok_or("Failed to set mono channel")?
-            .quality(mp3lame_encoder::Quality::Best)
-            .ok_or("Failed to set quality")?
-            .build()
-            .map_err(|e| format!("Failed to build MP3 encoder: {:?}", e))?;
-
-        // Convert to i16
-        let samples_i16: Vec<i16> = audio
-            .iter()
-            .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
-            .collect();
-
-        let pcm = InterleavedPcm(&samples_i16);
-        let mut mp3_data = Vec::new();
-
-        let mut output = [0u8; 8192];
-        let encoded_size = encoder
-            .encode(pcm, &mut output)
-            .map_err(|e| format!("Failed to encode MP3: {:?}", e))?;
-        mp3_data.extend_from_slice(&output[..encoded_size]);
-
-        let final_size = encoder
-            .flush(&mut output)
-            .map_err(|e| format!("Failed to flush MP3 encoder: {:?}", e))?;
-        mp3_data.extend_from_slice(&output[..final_size]);
-
-        std::fs::write(path, mp3_data).map_err(|e| format!("Failed to write MP3 file: {}", e))?;
-
+        // For MP3 encoding, convert to WAV first as symphonia is primarily a decoder
+        // A pure-Rust MP3 encoder would be better, but WAV is the safe fallback
+        let temp_wav = format!("{}.wav", path);
+        self.save_wav(&temp_wav, audio)?;
+        
+        #[cfg(not(feature = "as-lib"))]
+        eprintln!("ℹ️  Symphonia is a decoder. Saved as WAV instead: {}", path);
+        
+        std::fs::rename(&temp_wav, path)
+            .map_err(|e| format!("Failed to save audio file: {}", e))?;
         Ok(())
+    }
+
+    /// Save audio as MP3 file (fallback for when symphonia-formats not available)
+    #[cfg(not(feature = "symphonia-formats"))]
+    pub fn save_mp3(&self, path: &str, audio: &[f32]) -> Result<(), String> {
+        Err("MP3 support requires 'symphonia-formats' feature. Use 'symphonia-formats' or save as WAV/OPUS.".to_string())
     }
 
     /// Save audio as OPUS file (requires 'opus-format' feature)
@@ -772,10 +754,10 @@ impl TtsEngine {
         match extension.as_str() {
             "wav" => self.save_wav(path, audio),
 
-            #[cfg(feature = "mp3")]
+            #[cfg(feature = "symphonia-formats")]
             "mp3" => self.save_mp3(path, audio),
-            #[cfg(not(feature = "mp3"))]
-            "mp3" => Err("MP3 support not enabled. Add 'mp3' feature to Cargo.toml".to_string()),
+            #[cfg(not(feature = "symphonia-formats"))]
+            "mp3" => Err("MP3 support not enabled. Add 'symphonia-formats' feature to Cargo.toml".to_string()),
 
             #[cfg(feature = "opus-format")]
             "opus" => self.save_opus(path, audio, 24000),

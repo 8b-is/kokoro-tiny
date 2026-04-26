@@ -49,26 +49,33 @@ clap = { version = "4", features = ["derive"] }
 atty = "0.2"
 
 # Optional features
-mp3lame-encoder = { version = "0.2", optional = true }
-cpal = { version = "0.15", optional = true }
-rodio = { version = "0.19", optional = true }
+symphonia = { version = "0.5", optional = true, features = ["mp3", "wav", "flac"] }
+cpal = { version = "0.17.3", optional = true }
+rodio = { version = "0.22.2", optional = true }
 audiopus = { version = "0.2", optional = true }
 
 # Audio ducking support (reduces other audio while speaking)
-enigo = { version = "0.2", optional = true }  # Cross-platform input simulation for volume keys
+enigo = { version = "0.6.1", optional = true }  # Cross-platform input simulation for volume keys
+generic-array = "0.14.9"
+crypto-common = "0.1.7"
 
 [features]
 # Default features - no playback to avoid system library dependencies
 # Users can enable playback with: cargo build --features playback
 default = []
-mp3 = ["mp3lame-encoder"]
+symphonia-formats = ["symphonia"]
 cuda = ["ort/cuda"]
 playback = ["cpal", "rodio"]
 ducking = ["enigo"]  # Audio ducking - reduces other audio volume during TTS
 opus-format = ["audiopus"]
-all-formats = ["mp3", "opus-format"]
+all-formats = ["symphonia-formats", "opus-format"]
+# Internal feature for library-mode builds
+as-lib = []
 # Convenience feature for full functionality
 full = ["playback", "ducking", "all-formats"]
+rodio = ["dep:rodio"]
+cpal = ["dep:cpal"]
+enigo = ["dep:enigo"]
 
 [[example]]
 name = "simple"

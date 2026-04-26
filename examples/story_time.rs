@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🎤 Generating audio with proper punctuation pauses...\n");
 
     // Use the working v2 branch implementation with punctuation pauses
-    let audio = tts.synthesize_with_speed(story, Some("af_sky"), 1.0)?;
+    let audio = tts.synthesize_with_speed(story, Some("af_sky"), 1.0, None)?;
 
     println!(
         "✅ Generated {} samples ({:.1}s)",

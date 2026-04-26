@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let text = "Hello from kokoro-tiny! This is a minimal text to speech engine.";
     println!("Synthesizing: \"{}\"\n", text);
 
-    let audio = tts.synthesize(text, None)?;
+    let audio = tts.synthesize(text, None, None, None)?;
     println!("✅ Generated {} audio samples", audio.len());
 
     // Save to file
