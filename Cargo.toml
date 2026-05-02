@@ -2,6 +2,7 @@
 name = "kokoro-tiny"
 version = "0.2.0"
 edition = "2021"
+build = "build.rs"
 authors = ["Hue & Aye <team@8b.is>"]
 description = "Minimal TTS crate using Kokoro - perfect for embedding in other apps"
 license = "Apache-2.0"
@@ -12,7 +13,7 @@ readme = "README.md"
 keywords = ["tts", "text-to-speech", "kokoro", "audio", "voice"]
 categories = ["multimedia::audio", "multimedia", "command-line-utilities"]
 exclude = ["*.wav", "*.mp3", "*.opus", "*.flac", "target/", ".git/", ".DS_Store", "0.onnx", "0.bin", "models/"]
-include = ["src/**/*", "Cargo.toml", "LICENSE", "README.md", "examples/**/*", "assets/fallback.wav"]
+include = ["src/**/*", "Cargo.toml", "build.rs", "LICENSE", "README.md", "examples/**/*", "assets/fallback.wav"]
 
 [[bin]]
 name = "kokoro-speak"
@@ -34,7 +35,7 @@ ndarray = "0.17.2"
 ndarray-npy = "0.10.0"
 
 # Minimal async support for downloading model
-tokio = { version = "1.45", features = ["fs", "rt"] }
+tokio = { version = "1.45", features = ["fs", "rt", "rt-multi-thread", "net", "io-util", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 # For voice data loading and MCP server
@@ -50,19 +51,17 @@ atty = "0.2"
 
 # Optional features
 symphonia = { version = "0.5", optional = true, features = ["mp3", "wav", "flac"] }
-cpal = { version = "0.17.3", optional = true }
-rodio = { version = "0.22.2", optional = true }
+cpal = { version = "0.15.2", optional = true }
+rodio = { version = "0.17.3", optional = true }
 audiopus = { version = "0.2", optional = true }
 
 # Audio ducking support (reduces other audio while speaking)
 enigo = { version = "0.6.1", optional = true }  # Cross-platform input simulation for volume keys
-generic-array = "0.14.9"
-crypto-common = "0.1.7"
 
 [features]
 # Default features - no playback to avoid system library dependencies
 # Users can enable playback with: cargo build --features playback
-default = []
+default = ["playback"]
 symphonia-formats = ["symphonia"]
 cuda = ["ort/cuda"]
 playback = ["cpal", "rodio"]

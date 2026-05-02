@@ -5,6 +5,14 @@ use clap::{Parser, Subcommand};
 use kokoro_tiny::TtsEngine;
 use std::io::{self, BufRead};
 
+#[derive(serde::Deserialize)]
+struct SpeechMessage {
+    voice: String,
+    text: String,
+    #[allow(dead_code)]
+    priority: String,
+}
+
 #[derive(Parser)]
 #[command(name = "kokoro-speak")]
 #[command(about = "🎤 Minimal TTS for alerts, logs, and announcements", long_about = None)]
@@ -74,6 +82,13 @@ enum Commands {
         #[arg(short, long, default_value = "Context summary:")]
         prefix: String,
     },
+
+    /// Hot Tub server for MEM8 integration
+    Serve {
+        /// Port to listen on
+        #[arg(short, long, default_value_t = 8420)]
+        port: u16,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone)]
@@ -137,6 +152,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if let Some(Commands::Serve { port }) = cli.command {
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await.unwrap();
+            println!("✅ Listening on TCP 127.0.0.1:{}", port);
+            while let Ok((mut socket, addr)) = listener.accept().await {
+                println!("📡 Accepted connection from {}", addr);
+                use tokio::io::AsyncBufReadExt;
+                let mut reader = tokio::io::BufReader::new(&mut socket);
+                let mut line = String::new();
+                if let Ok(n) = reader.read_line(&mut line).await {
+                    if n > 0 {
+                        if let Ok(msg) = serde_json::from_str::<SpeechMessage>(&line) {
+                            println!("🗣️  Request [{}]: \"{}\"", msg.voice, msg.text);
+                            // Map voice
+                            let target_voice = if msg.voice.to_lowercase() == "aye" {
+                                "af_sky"
+                            } else {
+                                &msg.voice
+                            };
+                            
+                            let start = std::time::Instant::now();
+                            match engine.synthesize_with_options(&msg.text, Some(target_voice), cli.speed, cli.gain, Some("en")) {
+                                Ok(audio) => {
+                                    println!("[INFO] Synthesis complete in {:?}", start.elapsed());
+                                    let temp_path = "/tmp/mem8_kokoro_out.wav";
+                                    if let Err(e) = engine.save_wav(temp_path, &audio) {
+                                        eprintln!("⚠️ Failed to save audio: {}", e);
+                                    } else {
+                                        println!("✅ Synthesized successfully. Playing via ffplay...");
+                                        let _ = std::process::Command::new("ffplay")
+                                            .args(["-nodisp", "-autoexit", "-loglevel", "quiet", temp_path])
+                                            .status();
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠️ Synthesis error: {}", e);
+                                }
+                            }
+                        } else {
+                            eprintln!("⚠️ Failed to parse JSON payload");
+                        }
+                    }
+                }
+                println!("🔌 Disconnected {}", addr);
+            }
+        });
+        return Ok(());
+    }
+
     // Get text to speak based on command
     let (text, voice) = match cli.command {
         Some(Commands::Say { text }) => (text, cli.voice),
@@ -165,6 +229,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Use a clear, professional voice for context summaries
             (full_text, "bf_isabella".to_string())
         }
+
+        Some(Commands::Serve { .. }) => unreachable!(),
 
         None => {
             // Default: read from stdin if available, otherwise show help

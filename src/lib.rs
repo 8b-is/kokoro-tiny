@@ -64,7 +64,7 @@ const SAMPLE_RATE: u32 = 24000; // Kokoro model sample rate
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0; // User-facing normal speed (maps to model 0.65)
 const DEFAULT_LANG: &str = "en";
-const SPEED_SCALE: f32 = 0.65; // Model speed = user speed * this scale factor
+const SPEED_SCALE: f32 = 1.0; // Model speed = user speed * this scale factor
 const LONG_TEXT_THRESHOLD: usize = 120;
 const MAX_CHARS_PER_CHUNK: usize = 180;
 const CHUNK_CROSSFADE_MS: usize = 45;
@@ -1435,5 +1435,14 @@ mod tests {
         let long = "This sentence is intentionally quite a bit longer than the \
                     short sample so that it exceeds the chunking threshold we set.";
         assert!(needs_chunking(long));
+    }
+    #[test]
+    fn test_phoneme_output() {
+        let text = "ok ok";
+        let phonemes = text_to_phonemes(text, "en-us", None, true, false).unwrap();
+        println!("Phonemes vector length: {}", phonemes.len());
+        println!("Phonemes: {:?}", phonemes);
+        let joined = phonemes.join(" ");
+        println!("Joined: {:?}", joined);
     }
 }
