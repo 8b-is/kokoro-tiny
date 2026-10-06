@@ -318,6 +318,8 @@ impl TtsEngine {
             std::fs::read(model_path).map_err(|e| format!("Failed to read model file: {}", e))?;
         let session = Session::builder()
             .map_err(|e| format!("Failed to create session builder: {}", e))?
+            .with_intra_threads(2)
+            .map_err(|e| format!("Failed to limit inference threads: {}", e))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| format!("Failed to set optimization level: {}", e))?
             .commit_from_memory(&model_bytes)
