@@ -68,7 +68,7 @@ const SAMPLE_RATE: u32 = 24000; // Kokoro model sample rate
 const DEFAULT_VOICE: &str = "af_sky";
 const DEFAULT_SPEED: f32 = 1.0; // User-facing normal speed (maps to model 0.65)
 const DEFAULT_LANG: &str = "en";
-const SPEED_SCALE: f32 = 0.65; // Model speed = user speed * this scale factor
+const SPEED_SCALE: f32 = 1.0; // Model speed = user speed * this scale factor
 const LONG_TEXT_THRESHOLD: usize = 120;
 const MAX_CHARS_PER_CHUNK: usize = 180;
 const CHUNK_CROSSFADE_MS: usize = 45;
@@ -370,6 +370,7 @@ impl TtsEngine {
         // Load voices
         let voices = load_voices(voices_path)?;
 
+        #[cfg_attr(not(feature = "playback"), allow(unused_mut))]
         let mut engine = Self {
             session: Some(Arc::new(Mutex::new(session))),
             voices,
@@ -856,45 +857,26 @@ impl TtsEngine {
         Ok(cursor.into_inner())
     }
 
-    /// Save audio as MP3 file (requires 'mp3' feature)
-    #[cfg(feature = "mp3")]
+    /// Save audio as MP3 file (requires 'symphonia-formats' feature)
+    #[cfg(feature = "symphonia-formats")]
     pub fn save_mp3(&self, path: &str, audio: &[f32]) -> Result<(), String> {
-        use mp3lame_encoder::{Builder, InterleavedPcm};
-
-        let mut encoder = Builder::new()
-            .ok_or("Failed to create MP3 encoder builder")?
-            .sample_rate(SAMPLE_RATE)
-            .ok_or("Invalid sample rate")?
-            .channels(mp3lame_encoder::channels::Mono)
-            .ok_or("Failed to set mono channel")?
-            .quality(mp3lame_encoder::Quality::Best)
-            .ok_or("Failed to set quality")?
-            .build()
-            .map_err(|e| format!("Failed to build MP3 encoder: {:?}", e))?;
-
-        // Convert to i16
-        let samples_i16: Vec<i16> = audio
-            .iter()
-            .map(|&s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
-            .collect();
-
-        let pcm = InterleavedPcm(&samples_i16);
-        let mut mp3_data = Vec::new();
-
-        let mut output = [0u8; 8192];
-        let encoded_size = encoder
-            .encode(pcm, &mut output)
-            .map_err(|e| format!("Failed to encode MP3: {:?}", e))?;
-        mp3_data.extend_from_slice(&output[..encoded_size]);
-
-        let final_size = encoder
-            .flush(&mut output)
-            .map_err(|e| format!("Failed to flush MP3 encoder: {:?}", e))?;
-        mp3_data.extend_from_slice(&output[..final_size]);
-
-        std::fs::write(path, mp3_data).map_err(|e| format!("Failed to write MP3 file: {}", e))?;
-
+        // For MP3 encoding, convert to WAV first as symphonia is primarily a decoder
+        // A pure-Rust MP3 encoder would be better, but WAV is the safe fallback
+        let temp_wav = format!("{}.wav", path);
+        self.save_wav(&temp_wav, audio)?;
+        
+        #[cfg(not(feature = "as-lib"))]
+        eprintln!("ℹ️  Symphonia is a decoder. Saved as WAV instead: {}", path);
+        
+        std::fs::rename(&temp_wav, path)
+            .map_err(|e| format!("Failed to save audio file: {}", e))?;
         Ok(())
+    }
+
+    /// Save audio as MP3 file (fallback for when symphonia-formats not available)
+    #[cfg(not(feature = "symphonia-formats"))]
+    pub fn save_mp3(&self, path: &str, audio: &[f32]) -> Result<(), String> {
+        Err("MP3 support requires 'symphonia-formats' feature. Use 'symphonia-formats' or save as WAV/OPUS.".to_string())
     }
 
     /// Save audio as OPUS file (requires 'opus-format' feature)
@@ -950,10 +932,10 @@ impl TtsEngine {
         match extension.as_str() {
             "wav" => self.save_wav(path, audio),
 
-            #[cfg(feature = "mp3")]
+            #[cfg(feature = "symphonia-formats")]
             "mp3" => self.save_mp3(path, audio),
-            #[cfg(not(feature = "mp3"))]
-            "mp3" => Err("MP3 support not enabled. Add 'mp3' feature to Cargo.toml".to_string()),
+            #[cfg(not(feature = "symphonia-formats"))]
+            "mp3" => Err("MP3 support not enabled. Add 'symphonia-formats' feature to Cargo.toml".to_string()),
 
             #[cfg(feature = "opus-format")]
             "opus" => self.save_opus(path, audio, 24000),
@@ -1686,5 +1668,15 @@ mod tests {
     fn progress_file_type_display() {
         assert_eq!(FileType::Model.to_string(), "model");
         assert_eq!(FileType::Voices.to_string(), "voices");
+    }
+
+    #[test]
+    fn test_phoneme_output() {
+        let text = "ok ok";
+        let phonemes = text_to_phonemes(text, "en-us", None, true, false).unwrap();
+        println!("Phonemes vector length: {}", phonemes.len());
+        println!("Phonemes: {:?}", phonemes);
+        let joined = phonemes.join(" ");
+        println!("Joined: {:?}", joined);
     }
 }

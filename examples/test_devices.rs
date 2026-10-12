@@ -8,6 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("===================================\n");
 
     // Initialize TTS engine
+    #[cfg_attr(not(feature = "playback"), allow(unused_mut))]
     let mut tts = TtsEngine::new().await?;
 
     #[cfg(feature = "playback")]

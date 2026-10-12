@@ -97,16 +97,12 @@ impl McpServer {
         loop {
             let mut line = String::new();
             match self.stdin.read_line(&mut line) {
-                Ok(0) => break, // EOF
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("Failed to read line: {}", e);
-                    continue;
-                }
+                Ok(0) => break,
+                Ok(_) => {},
+                Err(e) => return Err(format!("Failed to read line: {}", e)),
             }
-
-            let line = line.trim();
-            if line.is_empty() {
+            
+            if line.trim().is_empty() {
                 continue;
             }
 
