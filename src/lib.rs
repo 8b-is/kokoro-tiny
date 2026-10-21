@@ -266,6 +266,9 @@ impl TtsEngine {
     /// Uses ~/.cache/k for shared model storage (minimal path!)
     pub async fn new() -> Result<Self, String> {
         let cache_dir = get_cache_dir();
+        if std::env::var("ESPEAK_DATA_PATH").is_err() && cache_dir.join("espeak-ng-data").exists() {
+            std::env::set_var("ESPEAK_DATA_PATH", &cache_dir);
+        }
         let model_path = cache_dir.join("0.onnx");
         let voices_path = cache_dir.join("0.bin");
 
