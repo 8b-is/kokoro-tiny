@@ -535,6 +535,7 @@ impl McpServer {
             ("hu_peter", "Grounded Hungarian male (Péter blend)", "Hungarian male narration & dialogue"),
             ("hu_bela", "Confident Hungarian male baritone", "Announcements, alerts in Magyar"),
             ("hu_boldog", "Lyrical Hungarian voice (Boldog Még)", "Poetry, lyrics, heartfelt Hungarian messages"),
+            ("hu_akph", "Akkezdet Phiai — Zenebuddhizmus (Saiid & Újonc Kottazűr cadence)", "A lelked a dallam, a tested a ritmus, az elme a rím"),
         ];
 
         let voices: Vec<_> = voice_descriptions.iter().map(|(name, desc, use_case)| {

@@ -48,6 +48,11 @@ pub const HUNGARIAN_VOICE_PRESETS: &[(&str, &str, &str)] = &[
         "af_bella.6+af_heart.4",
         "Lyrical Hungarian voice (Boldog Még)",
     ),
+    (
+        "hu_akph",
+        "am_echo.5+am_michael.5",
+        "Akkezdet Phiai — Zenebuddhizmus (Saiid & Újonc Kottazűr boom-bap cadence)",
+    ),
 ];
 
 /// Common Hungarian words used for fast, zero-dependency language detection
@@ -104,6 +109,25 @@ const HUNGARIAN_CORE_WORDS: &[&str] = &[
     "estét",
     "napot",
     "péter",
+    "zenebuddhizmus",
+    "kottazűr",
+    "akkezdet",
+    "phiai",
+    "saiid",
+    "újonc",
+    "závada",
+    "süveg",
+    "lelked",
+    "dallam",
+    "tested",
+    "ritmus",
+    "elme",
+    "rím",
+    "megvilágosodás",
+    "önmérséklet",
+    "kimerültség",
+    "szorongás",
+    "kapaszkodó",
 ];
 
 /// In-memory acoustic fingerprint cache for deterministic TTS -> STT round-trip verification
@@ -526,6 +550,12 @@ pub fn restore_hungarian_diacritics(text: &str) -> String {
         ("sziv", "szív"),
         ("elet", "élet"),
         ("barat", "barát"),
+        ("kottazur", "Kottazűr"),
+        ("Kottazur", "Kottazűr"),
+        ("rim", "rím"),
+        ("megvilagosodas", "megvilágosodás"),
+        ("onmerseklet", "önmérséklet"),
+        ("szorongas", "szorongás"),
         ("peter", "Péter"),
         ("Peter", "Péter"),
     ];
@@ -1043,5 +1073,26 @@ mod tests {
         assert!(res.confidence > 0.95);
         assert!(res.duration_ms >= 490 && res.duration_ms <= 510);
         assert!(res.rms_energy > 0.1);
+    }
+
+    #[test]
+    fn test_zenebuddhizmus_triad() {
+        // Akkezdet Phiai (Saiid & Újonc, Kottazűr 2010) — "A lelked a dallam, a tested a ritmus, az elme a rím"
+        let refrain = "A lelked a dallam, a tested a ritmus, az elme a rím. Ez a zenebuddhizmus.";
+        assert!(is_hungarian_text(refrain));
+        assert_eq!(normalize_lang_code(None, refrain), "hu");
+        assert_eq!(
+            resolve_voice_alias("hu_akph", "hu"),
+            "am_echo.5+am_michael.5"
+        );
+
+        let ipa = hungarian_graphemes_to_ipa(refrain);
+        assert!(ipa.contains("ˈlɛlkɛd"));
+        assert!(ipa.contains("ˈdɒlːɒm"));
+        assert!(ipa.contains("ˈtɛʃtɛd"));
+        assert!(ipa.contains("ˈritmuʃ"));
+        assert!(ipa.contains("ˈɛlmɛ"));
+        assert!(ipa.contains("ˈriːm"));
+        assert!(ipa.contains("ˈzɛnɛbudːhizmuʃ"));
     }
 }
