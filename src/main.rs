@@ -324,9 +324,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "📡 Beamed commit [{} · {}] to peer {}:{}",
                     summary.repo_name, summary.short_sha, peer_host, port
                 );
-                if *async_fire {
-                    return Ok(());
-                }
             }
         }
         if *async_fire {
@@ -355,9 +352,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "📡 Beamed pull [{} · {}] to peer {}:{}",
                     summary.repo_name, summary.short_sha, peer_host, port
                 );
-                if *async_fire {
-                    return Ok(());
-                }
             }
         }
         if *async_fire {

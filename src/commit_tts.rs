@@ -965,6 +965,7 @@ pub fn speak_commit(
         summary.voice,
         bounded_spoken
     );
+    let _ = std::io::stdout().flush();
 
     match backend {
         CommitTtsBackend::Mem8 => {
@@ -1137,13 +1138,6 @@ pub enum DaemonWireRequest {
         #[serde(default = "default_head_rev")]
         new_rev: String,
     },
-    GitHubCommitEvent {
-        github_repo: Option<String>,
-        #[serde(default)]
-        rev: Option<String>,
-        #[serde(default)]
-        branch: Option<String>,
-    },
     CommitEvent {
         repo_path: String,
         #[serde(default = "default_head_rev")]
@@ -1155,6 +1149,15 @@ pub enum DaemonWireRequest {
         #[serde(default)]
         priority: String,
     },
+    GitHubCommitEvent {
+        github_trigger: bool,
+        #[serde(default)]
+        github_repo: Option<String>,
+        #[serde(default)]
+        rev: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+    },
 }
 
 fn default_head_rev() -> String {
@@ -1162,23 +1165,64 @@ fn default_head_rev() -> String {
 }
 
 /// Push a serialized `CommitSummary` to any daemon `host:port` (e.g. peer Mac over LAN / Thunderbolt bridge).
+/// Automatically falls back to / mirrors via SSH loopback (`127.0.0.1:port`) when macOS `socketfilterfw`
+/// is active on the peer Mac (`192.168.11.13` / `m1`).
 pub fn try_push_summary_to_host(summary: &CommitSummary, host: &str, port: u16) -> bool {
+    use std::io::Write;
     use std::net::ToSocketAddrs;
-    let target = format!("{host}:{port}");
-    if let Ok(mut addrs) = target.to_socket_addrs() {
-        if let Some(addr) = addrs.next() {
-            if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(120)) {
-                let _ = stream.set_write_timeout(Some(Duration::from_millis(120)));
-                let payload = serde_json::json!({
-                    "summary": summary,
-                });
-                if writeln!(stream, "{}", payload).is_ok() {
-                    return true;
+    let payload = serde_json::json!({
+        "summary": summary,
+    });
+    let mut delivered = false;
+
+    // 1. If targeting the M1 Max peer (`192.168.11.13` or `m1`), also deliver via SSH loopback
+    // so macOS `socketfilterfw` never swallows the incoming LAN stream:
+    let ssh_target = if host == "192.168.11.13" || host == "m1" {
+        Some("m1")
+    } else if host.contains('@') {
+        Some(host)
+    } else {
+        None
+    };
+    if let Some(ssh_host) = ssh_target {
+        if let Ok(mut child) = Command::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=2",
+                ssh_host,
+                &format!("nc -w 1 127.0.0.1 {port}"),
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if writeln!(stdin, "{}", payload).is_ok() {
+                    let _ = stdin.flush();
+                    delivered = true;
                 }
             }
         }
     }
-    false
+
+    // 2. Direct TCP delivery for LAN hosts without `socketfilterfw` blocking:
+    let target = format!("{host}:{port}");
+    if let Ok(addrs) = target.to_socket_addrs() {
+        for addr in addrs {
+            if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(600)) {
+                let _ = stream.set_write_timeout(Some(Duration::from_millis(600)));
+                if writeln!(stream, "{}", payload).is_ok() {
+                    let _ = stream.flush();
+                    delivered = true;
+                    break;
+                }
+            }
+        }
+    }
+    delivered
 }
 
 /// Push a commit trigger to the running daemon on `127.0.0.1:port` (< 5ms),
@@ -1259,6 +1303,7 @@ pub fn try_push_github_to_daemon(
     if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(80)) {
         let _ = stream.set_write_timeout(Some(Duration::from_millis(80)));
         let payload = serde_json::json!({
+            "github_trigger": true,
             "github_repo": github_repo,
             "rev": rev,
             "branch": branch,
@@ -1394,7 +1439,10 @@ pub fn run_commit_watcher_daemon(
     loop {
         // 1. Check for instant TCP push triggers from `post-commit`, `post-merge` (`git pull`), global hooks, or peer Mac
         while let Ok((mut stream, _addr)) = listener.accept() {
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+            // On macOS/BSD, accepted sockets inherit O_NONBLOCK from the listener;
+            // restore blocking mode so `set_read_timeout` waits for LAN packets over Wi-Fi.
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let mut reader = BufReader::new(&mut stream);
             let mut line = String::new();
             if reader.read_line(&mut line).unwrap_or(0) > 0 {
@@ -1451,6 +1499,7 @@ pub fn run_commit_watcher_daemon(
                             github_repo,
                             rev,
                             branch,
+                            ..
                         } => {
                             if let Ok(summary) = CommitSummary::from_github(
                                 github_repo.as_deref(),
