@@ -560,6 +560,21 @@ bridge.send_tts_event("Hello", "af_sky", &audio)?;
 // Sends wave-encoded memory to MEM8 on port 8420
 ```
 
+### Background Commit Summary TTS Trigger (`commit` · `watch-commits` · `install-hooks`)
+
+Speak every Git commit across your workspace in real time using our own TTS engines (`Kokoro 82M ONNX`, `MEM|8 Voice` 44.1 kHz consciousness synthesizer, and `liquid-rust` `LFM2.5-Audio`), complete with a 3-trit `QuantTern` (`qt:xx`) `432 / 528 / 852 Hz` harmonic pre-chime and automatic Conventional-Commit voice routing (`feat` → `af_heart.6+af_bella.4`, `fix` → `af_nicole`, `docs`/`research` → `bf_isabella`, `test` → `am_michael`, `security` → `am_adam`, `deploy` → `am_echo`):
+
+```bash
+# 1. Install non-blocking (<2ms) .git/hooks/post-commit triggers across all workspace repos
+kokoro-speak install-hooks --workspace /Users/lodripeter/workspace/peterlodri-sec
+
+# 2. Run the persistent workspace commit watcher & TCP Hot Tub daemon (127.0.0.1:8420)
+kokoro-speak watch-commits --workspace /Users/lodripeter/workspace/peterlodri-sec --port 8420
+
+# 3. Speak any single repo's latest commit on demand (or switch engine: --engine kokoro|mem8|lfm)
+kokoro-speak commit --repo /path/to/repo --engine kokoro
+```
+
 ---
 
 ## 📄 License

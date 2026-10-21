@@ -2,8 +2,12 @@
 //! Perfect for smart-tree integration and system notifications!
 
 use clap::{Parser, Subcommand};
+use kokoro_tiny::commit_tts::{
+    self, CommitSummary, CommitTtsBackend,
+};
 use kokoro_tiny::TtsEngine;
 use std::io::{self, BufRead};
+use std::path::PathBuf;
 
 #[derive(serde::Deserialize)]
 struct SpeechMessage {
@@ -89,6 +93,71 @@ enum Commands {
         #[arg(short, long, default_value_t = 8420)]
         port: u16,
     },
+
+    /// Speak a Git commit summary using our own TTS engines (Kokoro 82M / MEM|8 / LFM2.5-Audio)
+    Commit {
+        /// Path to the Git repository
+        #[arg(short, long, default_value = ".")]
+        repo: PathBuf,
+
+        /// Commit revision (default: HEAD)
+        #[arg(long, default_value = "HEAD")]
+        rev: String,
+
+        /// TTS backend engine (`kokoro`, `mem8`, `lfm`)
+        #[arg(short, long, value_enum, default_value = "kokoro")]
+        engine: CommitTtsBackend,
+
+        /// Prepend the 3-trit (432/528/852 Hz) MEM|8 QuantTern harmonic pre-chime
+        #[arg(long, default_value_t = true)]
+        chime: bool,
+
+        /// Daemon port to push to when `--async-fire` is set
+        #[arg(short, long, default_value_t = 8420)]
+        port: u16,
+
+        /// Non-blocking fire-and-forget mode for `.git/hooks/post-commit` (< 2ms return)
+        #[arg(long)]
+        async_fire: bool,
+    },
+
+    /// Watch all Git repositories in a workspace and speak every background commit automatically
+    WatchCommits {
+        /// Workspace root containing Git repositories
+        #[arg(
+            short,
+            long,
+            default_value = "/Users/lodripeter/workspace/peterlodri-sec"
+        )]
+        workspace: PathBuf,
+
+        /// TCP port for instant `post-commit` hook events & MEM|8 Hot Tub messages
+        #[arg(short, long, default_value_t = 8420)]
+        port: u16,
+
+        /// TTS backend engine (`kokoro`, `mem8`, `lfm`)
+        #[arg(short, long, value_enum, default_value = "kokoro")]
+        engine: CommitTtsBackend,
+
+        /// Prepend the 3-trit (432/528/852 Hz) MEM|8 QuantTern harmonic pre-chime
+        #[arg(long, default_value_t = true)]
+        chime: bool,
+    },
+
+    /// Install non-blocking `.git/hooks/post-commit` TTS triggers across all repos in a workspace
+    InstallHooks {
+        /// Workspace root containing Git repositories
+        #[arg(
+            short,
+            long,
+            default_value = "/Users/lodripeter/workspace/peterlodri-sec"
+        )]
+        workspace: PathBuf,
+
+        /// Daemon port for the hook to push to
+        #[arg(short, long, default_value_t = 8420)]
+        port: u16,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone)]
@@ -138,6 +207,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let cli = Cli::parse();
 
+    // Fast-path commands that must return in < 5ms without loading the 325 MB ONNX model:
+    if let Some(Commands::InstallHooks { workspace, port }) = &cli.command {
+        let exe = std::env::current_exe()?;
+        let count = commit_tts::install_workspace_hooks(workspace, &exe, *port)?;
+        println!(
+            "✅ Installed non-blocking commit TTS post-commit hook across {} repositories in {}",
+            count,
+            workspace.display()
+        );
+        return Ok(());
+    }
+
+    if let Some(Commands::Commit {
+        repo,
+        rev,
+        port,
+        async_fire: true,
+        ..
+    }) = &cli.command
+    {
+        if !commit_tts::try_push_to_daemon(repo, rev, *port) {
+            let exe = std::env::current_exe()?;
+            commit_tts::spawn_detached_commit_speech(&exe, repo, rev)?;
+        }
+        return Ok(());
+    }
+
     // Initialize TTS engine (uses ~/.cache/k automatically)
     let mut engine = rt
         .block_on(TtsEngine::new())
@@ -149,6 +245,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for voice in engine.voices() {
             println!("  • {}", voice);
         }
+        return Ok(());
+    }
+
+    if let Some(Commands::Commit {
+        repo,
+        rev,
+        engine: backend,
+        chime,
+        ..
+    }) = &cli.command
+    {
+        let summary = CommitSummary::from_repo(repo, rev)?;
+        commit_tts::speak_commit(
+            &mut engine,
+            &summary,
+            *backend,
+            cli.speed,
+            cli.gain,
+            cli.volume,
+            cli.duck,
+            cli.duck_level,
+            *chime,
+        )?;
+        return Ok(());
+    }
+
+    if let Some(Commands::WatchCommits {
+        workspace,
+        port,
+        engine: backend,
+        chime,
+    }) = &cli.command
+    {
+        commit_tts::run_commit_watcher_daemon(
+            &mut engine,
+            workspace,
+            *port,
+            *backend,
+            cli.speed,
+            cli.gain,
+            cli.volume,
+            cli.duck,
+            cli.duck_level,
+            *chime,
+        )?;
         return Ok(());
     }
 
@@ -230,7 +371,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (full_text, "bf_isabella".to_string())
         }
 
-        Some(Commands::Serve { .. }) => unreachable!(),
+        Some(Commands::Serve { .. })
+        | Some(Commands::Commit { .. })
+        | Some(Commands::WatchCommits { .. })
+        | Some(Commands::InstallHooks { .. }) => unreachable!(),
 
         None => {
             // Default: read from stdin if available, otherwise show help
