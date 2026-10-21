@@ -158,7 +158,7 @@ impl CommitSummary {
         let meta_out = Command::new("git")
             .arg("-C")
             .arg(&toplevel)
-            .args(["show", "-s", "--format=%h%n%an%n%s", rev])
+            .args(["show", "-s", "--format=%h%n%an%n%s%n%b", rev])
             .output()
             .map_err(|e| format!("git show meta failed: {e}"))?;
         if !meta_out.status.success() {
@@ -169,6 +169,7 @@ impl CommitSummary {
         let short_sha = lines.next().unwrap_or("unknown").trim().to_string();
         let author = lines.next().unwrap_or("unknown").trim().to_string();
         let raw_subject = lines.next().unwrap_or("update").trim().to_string();
+        let body_rest: String = lines.collect::<Vec<_>>().join("\n");
 
         let stat_out = Command::new("git")
             .arg("-C")
@@ -179,7 +180,7 @@ impl CommitSummary {
         let stat_str = String::from_utf8_lossy(&stat_out.stdout);
         let (files_changed, insertions, deletions) = parse_shortstat(&stat_str);
 
-        Ok(Self::from_fields(
+        let mut summary = Self::from_fields(
             repo_name,
             toplevel,
             branch,
@@ -189,7 +190,193 @@ impl CommitSummary {
             files_changed,
             insertions,
             deletions,
-        ))
+        );
+
+        let body_highlights = extract_body_highlights(&body_rest, 2);
+        if !body_highlights.is_empty() {
+            summary.spoken_text = build_spoken_narration_with_highlights(
+                &summary.repo_name,
+                &summary.branch,
+                &summary.commit_type,
+                summary.scope.as_deref(),
+                &summary.clean_subject,
+                &body_highlights,
+                summary.files_changed,
+                summary.insertions,
+                summary.deletions,
+            );
+        }
+        Ok(summary)
+    }
+
+    /// Summarize a `git pull` (or merge range `old_rev..new_rev`, defaulting to `ORIG_HEAD..HEAD`)
+    /// into a cohesive spoken changelog capped strictly below 60 seconds.
+    pub fn from_pull(
+        repo_path: &Path,
+        old_rev: Option<&str>,
+        new_rev: &str,
+    ) -> Result<Self, String> {
+        let toplevel_out = Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .map_err(|e| format!("git rev-parse failed: {e}"))?;
+        if !toplevel_out.status.success() {
+            return Err(format!("Not a git repository: {}", repo_path.display()));
+        }
+        let toplevel = String::from_utf8_lossy(&toplevel_out.stdout)
+            .trim()
+            .to_string();
+        let repo_name = Path::new(&toplevel)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("repository")
+            .to_string();
+
+        let branch_out = Command::new("git")
+            .arg("-C")
+            .arg(&toplevel)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .map_err(|e| format!("git branch failed: {e}"))?;
+        let branch = String::from_utf8_lossy(&branch_out.stdout)
+            .trim()
+            .to_string();
+
+        // Determine the base revision before the pull (`old_rev` or `ORIG_HEAD` or `HEAD~1`)
+        let resolved_old = match old_rev.filter(|s| !s.trim().is_empty()) {
+            Some(r) => r.trim().to_string(),
+            None => {
+                let orig = Command::new("git")
+                    .arg("-C")
+                    .arg(&toplevel)
+                    .args(["rev-parse", "--verify", "-q", "ORIG_HEAD"])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                if !orig.is_empty() {
+                    orig
+                } else {
+                    "HEAD~1".to_string()
+                }
+            }
+        };
+
+        let range = format!("{resolved_old}..{new_rev}");
+        let log_out = Command::new("git")
+            .arg("-C")
+            .arg(&toplevel)
+            .args(["log", "--format=%h\t%an\t%s", &range])
+            .output()
+            .ok()
+            .filter(|o| o.status.success());
+
+        let mut subjects: Vec<String> = Vec::new();
+        let mut head_sha = String::new();
+        let mut head_author = String::new();
+
+        if let Some(out) = log_out {
+            for (idx, line) in String::from_utf8_lossy(&out.stdout).lines().enumerate() {
+                let cols: Vec<&str> = line.splitn(3, '\t').collect();
+                if cols.len() == 3 {
+                    if idx == 0 {
+                        head_sha = cols[0].trim().to_string();
+                        head_author = cols[1].trim().to_string();
+                    }
+                    subjects.push(cols[2].trim().to_string());
+                }
+            }
+        }
+
+        if subjects.is_empty() {
+            // Fallback to single-commit summary on `new_rev`
+            let mut single = Self::from_repo(repo_path, new_rev)?;
+            single.commit_type = "pull".to_string();
+            single.spoken_text = cap_spoken_text_to_60s(&format!(
+                "Pulled latest update in {} on {}: {}",
+                humanize_for_speech(&single.repo_name),
+                humanize_for_speech(&single.branch),
+                humanize_for_speech(&single.clean_subject)
+            ));
+            return Ok(single);
+        }
+
+        let stat_out = Command::new("git")
+            .arg("-C")
+            .arg(&toplevel)
+            .args(["diff", "--shortstat", &resolved_old, new_rev])
+            .output()
+            .ok();
+        let (files_changed, insertions, deletions) = stat_out
+            .map(|o| parse_shortstat(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or((0, 0, 0));
+
+        let commit_count = subjects.len();
+        let raw_subject = if commit_count == 1 {
+            format!("pull: {}", subjects[0])
+        } else {
+            format!("pull({commit_count} commits): {}", subjects[0])
+        };
+
+        let highlights: Vec<String> = subjects
+            .iter()
+            .take(4)
+            .map(|s| {
+                let (_, _, clean) = parse_conventional_subject(s);
+                humanize_for_speech(&clean)
+            })
+            .collect();
+
+        let spoken_repo = humanize_for_speech(&repo_name);
+        let spoken_branch = humanize_for_speech(&branch);
+        let mut narration = if commit_count == 1 {
+            format!(
+                "Pulled 1 commit into {spoken_repo} on {spoken_branch}: {}.",
+                highlights[0]
+            )
+        } else {
+            let listed = highlights.join(". Next, ");
+            let extra = if commit_count > highlights.len() {
+                format!(", plus {} earlier commits", commit_count - highlights.len())
+            } else {
+                String::new()
+            };
+            format!(
+                "Pulled {commit_count} commits into {spoken_repo} on {spoken_branch}{extra}. Highlights: {listed}."
+            )
+        };
+
+        if files_changed > 0 {
+            let f_word = if files_changed == 1 { "file" } else { "files" };
+            narration.push_str(&format!(" {files_changed} {f_word} updated."));
+        }
+        let spoken_text = cap_spoken_text_to_60s(&narration);
+
+        let affect = QuantTernAffect::from_commit("feat", &raw_subject);
+        let voice = select_kokoro_voice("feat", &raw_subject);
+        let lfm_voice = select_lfm_voice("feat", &raw_subject);
+
+        Ok(Self {
+            repo_name,
+            repo_path: toplevel,
+            branch,
+            short_sha: format!("pull-{}", &head_sha[..head_sha.len().min(7)]),
+            author: head_author,
+            commit_type: "pull".to_string(),
+            scope: Some(format!("{commit_count} commits")),
+            clean_subject: subjects[0].clone(),
+            raw_subject,
+            files_changed,
+            insertions,
+            deletions,
+            affect,
+            voice,
+            lfm_voice,
+            spoken_text,
+        })
     }
 
     /// Construct a `CommitSummary` directly from extracted commit fields.
@@ -466,40 +653,162 @@ pub fn select_lfm_voice(commit_type: &str, subject: &str) -> String {
     }
 }
 
-/// Normalize repository names and technical abbreviations so TTS pronounces them naturally.
+/// Maximum spoken words for a commit or pull changelog summary (~48–55 seconds at normal speech rate).
+pub const MAX_SPOKEN_WORDS: usize = 120;
+/// Hard ceiling in seconds for any spoken commit/pull changelog audio buffer.
+pub const MAX_AUDIO_SECONDS: f32 = 60.0;
+
+/// Normalize repository names, paths, symbols, and technical abbreviations so TTS pronounces them naturally.
 pub fn humanize_for_speech(input: &str) -> String {
     let mut s = input.to_string();
     let replacements = [
         ("8b-is-engine", "eight B is engine"),
         ("8b-is", "eight B is"),
+        ("8bit-wraith", "eight bit wraith"),
+        ("esp32.vaked.dev", "E S P thirty two vaked dot dev"),
         ("pocoo.vaked.dev", "pocoo vaked dot dev"),
         ("zeno.vaked.dev", "zeno vaked dot dev"),
         ("kotoro.vaked.dev", "kotoro vaked dot dev"),
         ("zoneinn.vaked.dev", "zone inn vaked dot dev"),
+        ("design.vaked.dev", "design vaked dot dev"),
+        (".vaked.dev", " vaked dot dev"),
         ("mlxquantlovefrom.com", "M L X quant love from dot com"),
         ("qultrakotoro", "Q ultra kotoro"),
         ("kokoro-tiny", "kokoro tiny"),
+        ("kokoro-speak", "kokoro speak"),
         ("liquid-rust", "liquid rust"),
+        ("fandom-mcp", "fandom M C P"),
+        ("wa-stream", "W A stream"),
         ("qwave", "Q wave"),
         ("CT-000", "C T zero zero zero"),
         ("CT-015", "C T zero fifteen"),
+        ("MEM|8", "mem eight"),
+        ("MEM8", "mem eight"),
+        ("QuantTern", "quant tern"),
+        ("espeak-rs-sys", "E speak R S sys"),
+        ("espeak-ng", "E speak N G"),
         ("raw_research", "raw research"),
+        ("commit_tts", "commit T T S"),
         ("governance_trilogy_instances", "governance trilogy instances"),
         ("{<3,<3,<3}+1", "family plus one"),
         ("<3", "love"),
-        ("README.md", "readme"),
+        ("README.md", "read me"),
+        ("README", "read me"),
+        ("Cargo.toml", "Cargo toml"),
+        (".jsonl", " J S O N L"),
+        (".json", " J S O N"),
         (".rs", " dot R S"),
         (".html", " H T M L"),
         (".pdf", " P D F"),
         (".tex", " TeX"),
+        (".wav", " wave"),
+        ("TTS", "T T S"),
+        ("MCP", "M C P"),
+        ("CLI", "C L I"),
+        ("API", "A P I"),
+        ("ONNX", "O N N X"),
+        ("SSH", "S S H"),
+        ("TCP", "T C P"),
+        ("GPU", "G P U"),
+        (" -> ", " to "),
+        (" → ", " to "),
+        (" + ", " and "),
+        (" & ", " and "),
         ("&", " and "),
+        ("`", ""),
         ("_", " "),
+        ("/", " "),
     ];
     for (from, to) in replacements {
         s = s.replace(from, to);
     }
-    // Collapse excess whitespace
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+
+    // Expand stuck comma lists like "readme,deploy" -> "readme and deploy"
+    let mut expanded = String::with_capacity(s.len() + 16);
+    let chars: Vec<char> = s.chars().collect();
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if c == ',' && i > 0 && i + 1 < chars.len() && chars[i - 1].is_alphanumeric() && chars[i + 1].is_alphanumeric() {
+            expanded.push_str(" and ");
+        } else {
+            expanded.push(c);
+        }
+    }
+
+    expanded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Extract up to `max_items` concise bullet/sentence highlights from a multi-line commit body,
+/// skipping `Co-authored-by:`, `Signed-off-by:`, raw URLs, and code fences.
+pub fn extract_body_highlights(body: &str, max_items: usize) -> Vec<String> {
+    let mut highlights = Vec::new();
+    let mut in_code_block = false;
+
+    for raw_line in body.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block || trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("co-authored-by:")
+            || lower.starts_with("signed-off-by:")
+            || lower.starts_with("reviewed-by:")
+            || lower.starts_with("http://")
+            || lower.starts_with("https://")
+        {
+            continue;
+        }
+
+        let cleaned = trimmed
+            .trim_start_matches(['-', '*', '•', '+'])
+            .trim();
+        if cleaned.len() >= 8 {
+            let mut spoken = humanize_for_speech(cleaned);
+            if spoken.len() > 110 {
+                spoken.truncate(110);
+            }
+            highlights.push(spoken);
+            if highlights.len() >= max_items {
+                break;
+            }
+        }
+    }
+    highlights
+}
+
+/// Strictly cap any spoken changelog narration so it stays under `MAX_SPOKEN_WORDS` (~50s, well below 60s max),
+/// ending cleanly at a sentence boundary.
+pub fn cap_spoken_text_to_60s(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() <= MAX_SPOKEN_WORDS {
+        return text.trim().to_string();
+    }
+    let capped = words[..MAX_SPOKEN_WORDS].join(" ");
+    // Prefer cutting at the last period before the word cap so we never stop mid-sentence
+    if let Some(dot_idx) = capped.rfind('.') {
+        if dot_idx > capped.len() / 2 {
+            return capped[..=dot_idx].trim().to_string();
+        }
+    }
+    format!("{}.", capped.trim_end_matches(['.', ',', ';', ':']))
+}
+
+/// Hard-cap any synthesized audio buffer to `MAX_AUDIO_SECONDS` (60.0s) with a smooth 300ms cosine fade-out.
+pub fn cap_audio_to_60s(samples: &mut Vec<f32>, sample_rate: u32) {
+    let max_samples = (sample_rate as f32 * MAX_AUDIO_SECONDS) as usize;
+    if samples.len() > max_samples {
+        samples.truncate(max_samples);
+        let fade_len = ((sample_rate as usize) * 300 / 1000).min(samples.len());
+        let start = samples.len() - fade_len;
+        for i in 0..fade_len {
+            let gain = 0.5 * (1.0 + (PI * (i as f32 / fade_len as f32)).cos());
+            samples[start + i] *= gain;
+        }
+    }
 }
 
 /// Construct the natural-language sentence spoken for a commit.
@@ -513,28 +822,59 @@ pub fn build_spoken_narration(
     insertions: usize,
     deletions: usize,
 ) -> String {
+    build_spoken_narration_with_highlights(
+        repo_name,
+        branch,
+        commit_type,
+        scope,
+        clean_subject,
+        &[],
+        files_changed,
+        insertions,
+        deletions,
+    )
+}
+
+/// Construct the natural-language changelog summary for a commit (including optional body highlights),
+/// capped to <= 60 seconds of speech.
+#[allow(clippy::too_many_arguments)]
+pub fn build_spoken_narration_with_highlights(
+    repo_name: &str,
+    branch: &str,
+    commit_type: &str,
+    scope: Option<&str>,
+    clean_subject: &str,
+    highlights: &[String],
+    files_changed: usize,
+    insertions: usize,
+    deletions: usize,
+) -> String {
     let spoken_repo = humanize_for_speech(repo_name);
     let spoken_branch = humanize_for_speech(branch);
     let spoken_type = match commit_type {
         "feat" => "feature",
         "fix" => "fix",
-        "docs" => "documentation",
-        "test" => "test",
+        "docs" => "documentation update",
+        "test" => "test update",
         "refactor" => "refactor",
-        "perf" => "performance",
+        "perf" => "performance update",
         "chore" => "chore",
+        "pull" => "pull",
         _ => "commit",
     };
 
     let scope_phrase = match scope {
-        Some(sc) if !sc.is_empty() => format!(" in {}", humanize_for_speech(sc)),
+        Some(sc) if !sc.is_empty() => format!(" for {}", humanize_for_speech(sc)),
         _ => String::new(),
     };
 
-    let mut subj = humanize_for_speech(clean_subject);
-    if subj.len() > 140 {
-        subj.truncate(140);
-    }
+    let subj = humanize_for_speech(clean_subject);
+
+    let highlights_phrase = if highlights.is_empty() {
+        String::new()
+    } else {
+        format!(" Details: {}.", highlights.join(". "))
+    };
 
     let stats_phrase = if files_changed > 0 {
         let f_word = if files_changed == 1 { "file" } else { "files" };
@@ -550,13 +890,17 @@ pub fn build_spoken_narration(
         String::new()
     };
 
-    if stats_phrase.is_empty() {
-        format!("New {spoken_type}{scope_phrase} in {spoken_repo} on {spoken_branch}: {subj}.")
+    let raw = if stats_phrase.is_empty() {
+        format!(
+            "New {spoken_type}{scope_phrase} in {spoken_repo} on {spoken_branch}. {subj}.{highlights_phrase}"
+        )
     } else {
         format!(
-            "New {spoken_type}{scope_phrase} in {spoken_repo} on {spoken_branch}: {subj}. {stats_phrase}"
+            "New {spoken_type}{scope_phrase} in {spoken_repo} on {spoken_branch}. {subj}.{highlights_phrase} {stats_phrase}"
         )
-    }
+    };
+
+    cap_spoken_text_to_60s(&raw)
 }
 
 /// Synthesize a 210ms 3-trit `MEM|8` / `FLUG-OS` harmonic pre-chime at `sample_rate` (24 kHz).
@@ -592,7 +936,8 @@ pub fn synthesize_vad_chime(trits: [i8; 3], sample_rate: u32) -> Vec<f32> {
     out
 }
 
-/// Speak a `CommitSummary` using our own TTS engines (`Kokoro`, `Mem8`, or `Lfm`).
+/// Speak a `CommitSummary` using our own TTS engines (`Kokoro`, `Mem8`, or `Lfm`),
+/// guaranteed never to exceed 60 seconds.
 pub fn speak_commit(
     engine: &mut TtsEngine,
     summary: &CommitSummary,
@@ -610,13 +955,15 @@ pub fn speak_commit(
         summary.short_sha
     ));
 
+    let bounded_spoken = cap_spoken_text_to_60s(&summary.spoken_text);
+
     println!(
         "🔔 [{} · {} · {} · voice={}] {}",
         summary.repo_name,
         summary.short_sha,
         summary.affect.qt_hex,
         summary.voice,
-        summary.spoken_text
+        bounded_spoken
     );
 
     match backend {
@@ -627,7 +974,8 @@ pub fn speak_commit(
                 (summary.affect.arousal + 1.0) * 0.5,
                 (summary.affect.dominance + 1.0) * 0.5,
             );
-            let samples_44k = mem8.synthesize_from_consciousness(&summary.spoken_text, 2200);
+            let mut samples_44k = mem8.synthesize_from_consciousness(&bounded_spoken, 2200);
+            cap_audio_to_60s(&mut samples_44k, 44100);
             save_mono_wav(&wav_path, &samples_44k, 44100)?;
             play_wav_file(&wav_path, volume)?;
         }
@@ -639,7 +987,7 @@ pub fn speak_commit(
                     .args([
                         "speak",
                         "-t",
-                        &summary.spoken_text,
+                        &bounded_spoken,
                         "-o",
                         wav_path.to_str().unwrap_or("/tmp/lfm_commit.wav"),
                         "--voice",
@@ -670,7 +1018,7 @@ pub fn speak_commit(
         }
         CommitTtsBackend::Kokoro => {
             let speech = engine.synthesize_with_options(
-                &summary.spoken_text,
+                &bounded_spoken,
                 Some(&summary.voice),
                 speed,
                 gain,
@@ -683,6 +1031,7 @@ pub fn speak_commit(
                 Vec::new()
             };
             full_audio.extend_from_slice(&speech);
+            cap_audio_to_60s(&mut full_audio, 24000);
 
             engine.save_wav(
                 wav_path.to_str().unwrap_or("/tmp/8b_commit_tts.wav"),
@@ -774,12 +1123,19 @@ fn append_commit_tts_log(summary: &CommitSummary, wav_path: &Path) {
     }
 }
 
-/// Wire payload accepted on `0.0.0.0:8420` from `post-commit` hooks, peer Macs, or GitHub triggers.
+/// Wire payload accepted on `0.0.0.0:8420` from `post-commit` / `post-merge` hooks, peer Macs, or GitHub triggers.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
 pub enum DaemonWireRequest {
     DirectSummary {
         summary: CommitSummary,
+    },
+    PullEvent {
+        pull_repo_path: String,
+        #[serde(default)]
+        old_rev: Option<String>,
+        #[serde(default = "default_head_rev")]
+        new_rev: String,
     },
     GitHubCommitEvent {
         github_repo: Option<String>,
@@ -856,6 +1212,42 @@ pub fn try_push_to_daemon(repo_path: &Path, rev: &str, port: u16) -> bool {
     delivered
 }
 
+/// Push a `git pull` (`post-merge`) trigger to the running daemon on `127.0.0.1:port` (< 5ms),
+/// and optionally mirror the pulled changelog `CommitSummary` to `KOKORO_PEER_HOST`.
+pub fn try_push_pull_to_daemon(
+    repo_path: &Path,
+    old_rev: Option<&str>,
+    new_rev: &str,
+    port: u16,
+) -> bool {
+    let mut delivered = false;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(80)) {
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(80)));
+        let payload = serde_json::json!({
+            "pull_repo_path": repo_path.display().to_string(),
+            "old_rev": old_rev,
+            "new_rev": new_rev,
+        });
+        if writeln!(stream, "{}", payload).is_ok() {
+            delivered = true;
+        }
+    }
+
+    if let Ok(peer_host) = std::env::var("KOKORO_PEER_HOST") {
+        let peer_trimmed = peer_host.trim();
+        if !peer_trimmed.is_empty() {
+            if let Ok(summary) = CommitSummary::from_pull(repo_path, old_rev, new_rev) {
+                if try_push_summary_to_host(&summary, peer_trimmed, port) {
+                    delivered = true;
+                }
+            }
+        }
+    }
+
+    delivered
+}
+
 /// Push a GitHub commit trigger to the running daemon on `127.0.0.1:port`.
 pub fn try_push_github_to_daemon(
     github_repo: Option<&str>,
@@ -904,26 +1296,40 @@ pub fn discover_head_logs(workspace_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
     out
 }
 
-/// Extract the latest commit SHA from the last line of `.git/logs/HEAD`.
-/// Format: `<old_sha> <new_sha> <name> <email> <timestamp> <tz>\tcommit: <subject>`
-fn parse_last_head_log_line(log_path: &Path) -> Option<(String, bool)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeadLogAction {
+    Commit,
+    Pull,
+    Ignore,
+}
+
+/// Extract `(old_sha, new_sha, action_kind)` from the last line of `.git/logs/HEAD`.
+/// Format: `<old_sha> <new_sha> <name> <email> <timestamp> <tz>\t<action>`
+fn parse_last_head_log_line(log_path: &Path) -> Option<(String, String, HeadLogAction)> {
     let content = fs::read_to_string(log_path).ok()?;
     let last_line = content.lines().rev().find(|l| !l.trim().is_empty())?;
     let mut parts = last_line.splitn(2, '\t');
     let header = parts.next()?;
     let action = parts.next().unwrap_or("");
-    let new_sha = header.split_whitespace().nth(1)?.to_string();
-    // Only trigger on actual commits (or merges/cherry-picks/rebases finishing a commit),
-    // not plain `checkout:` branch switches.
-    let is_commit_action = action.starts_with("commit")
+    let mut shas = header.split_whitespace();
+    let old_sha = shas.next()?.to_string();
+    let new_sha = shas.next()?.to_string();
+    let kind = if action.starts_with("pull") {
+        HeadLogAction::Pull
+    } else if action.starts_with("commit")
         || action.starts_with("merge")
-        || action.starts_with("cherry-pick");
-    Some((new_sha, is_commit_action))
+        || action.starts_with("cherry-pick")
+    {
+        HeadLogAction::Commit
+    } else {
+        HeadLogAction::Ignore
+    };
+    Some((old_sha, new_sha, kind))
 }
 
 /// Persistent background workspace & GitHub daemon that watches:
-/// 1. Instant TCP push triggers on `0.0.0.0:port` (from local hooks, global hooks, or the peer Mac)
-/// 2. `.git/logs/HEAD` across all local workspace repositories
+/// 1. Instant TCP push triggers on `0.0.0.0:port` (from local `post-commit`/`post-merge` hooks, global hooks, or peer Mac)
+/// 2. `.git/logs/HEAD` across all local workspace repositories (both commits and `git pull`s!)
 /// 3. Live GitHub `PushEvent`s across `peterlodri-sec`, `8b-is`, and `standardgalactic`
 pub fn run_commit_watcher_daemon(
     engine: &mut TtsEngine,
@@ -944,18 +1350,19 @@ pub fn run_commit_watcher_daemon(
         .set_nonblocking(true)
         .map_err(|e| format!("Failed to set nonblocking listener: {e}"))?;
 
-    // Baseline existing HEAD states so we only speak *new* commits that happen after startup
+    // Baseline existing HEAD states so we only speak *new* commits/pulls that happen after startup
     let mut log_states: HashMap<PathBuf, (u64, Option<SystemTime>, String)> = HashMap::new();
     let mut spoken_commits: HashSet<(String, String)> = HashSet::new();
 
     for (repo_dir, log_path) in discover_head_logs(workspace_dir) {
         if let Ok(meta) = fs::metadata(&log_path) {
             let sha = parse_last_head_log_line(&log_path)
-                .map(|(s, _)| s)
+                .map(|(_, new_s, _)| new_s)
                 .unwrap_or_default();
             if let Some(name) = repo_dir.file_name().and_then(|s| s.to_str()) {
                 if sha.len() >= 7 {
                     spoken_commits.insert((name.to_string(), sha[..7].to_string()));
+                    spoken_commits.insert((name.to_string(), format!("pull-{}", &sha[..7])));
                 }
             }
             log_states.insert(log_path, (meta.len(), meta.modified().ok(), sha));
@@ -976,7 +1383,7 @@ pub fn run_commit_watcher_daemon(
     }
 
     println!(
-        "🛰️  8b-is Commit TTS Daemon online! Watching {} local git repos in {} + {} GitHub push feeds + listening on 0.0.0.0:{}",
+        "🛰️  8b-is Commit & Pull TTS Daemon online! Watching {} local git repos in {} + {} GitHub push feeds + listening on 0.0.0.0:{}",
         log_states.len(),
         workspace_dir.display(),
         initial_gh_events.len(),
@@ -985,7 +1392,7 @@ pub fn run_commit_watcher_daemon(
 
     let mut tick: u64 = 0;
     loop {
-        // 1. Check for instant TCP push triggers from `.git/hooks/post-commit`, global hooks, or peer Mac
+        // 1. Check for instant TCP push triggers from `post-commit`, `post-merge` (`git pull`), global hooks, or peer Mac
         while let Ok((mut stream, _addr)) = listener.accept() {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
             let mut reader = BufReader::new(&mut stream);
@@ -1007,6 +1414,37 @@ pub fn run_commit_watcher_daemon(
                                     duck_level,
                                     with_chime,
                                 );
+                            }
+                        }
+                        DaemonWireRequest::PullEvent {
+                            pull_repo_path,
+                            old_rev,
+                            new_rev,
+                        } => {
+                            let path = PathBuf::from(&pull_repo_path);
+                            if let Ok(summary) =
+                                CommitSummary::from_pull(&path, old_rev.as_deref(), &new_rev)
+                            {
+                                let raw_sha = summary
+                                    .short_sha
+                                    .strip_prefix("pull-")
+                                    .unwrap_or(&summary.short_sha)
+                                    .to_string();
+                                spoken_commits.insert((summary.repo_name.clone(), raw_sha));
+                                let key = (summary.repo_name.clone(), summary.short_sha.clone());
+                                if spoken_commits.insert(key) {
+                                    let _ = speak_commit(
+                                        engine,
+                                        &summary,
+                                        backend,
+                                        speed,
+                                        gain,
+                                        volume,
+                                        duck,
+                                        duck_level,
+                                        with_chime,
+                                    );
+                                }
                             }
                         }
                         DaemonWireRequest::GitHubCommitEvent {
@@ -1060,13 +1498,15 @@ pub fn run_commit_watcher_daemon(
                             } else {
                                 &voice
                             };
-                            if let Ok(audio) = engine.synthesize_with_options(
-                                &text,
+                            let capped = cap_spoken_text_to_60s(&text);
+                            if let Ok(mut audio) = engine.synthesize_with_options(
+                                &capped,
                                 Some(target_voice),
                                 speed,
                                 gain,
                                 Some("en"),
                             ) {
+                                cap_audio_to_60s(&mut audio, 24000);
                                 #[cfg(feature = "playback")]
                                 {
                                     let _ = engine.play(&audio, volume);
@@ -1096,29 +1536,68 @@ pub fn run_commit_watcher_daemon(
                 };
 
                 if changed {
-                    if let Some((new_sha, is_commit)) = parse_last_head_log_line(&log_path) {
+                    if let Some((old_sha, new_sha, action_kind)) =
+                        parse_last_head_log_line(&log_path)
+                    {
                         let prev_sha = log_states
                             .get(&log_path)
                             .map(|(_, _, s)| s.clone())
                             .unwrap_or_default();
                         log_states.insert(log_path.clone(), (new_len, new_mtime, new_sha.clone()));
 
-                        if is_commit && new_sha != prev_sha {
-                            if let Ok(summary) = CommitSummary::from_repo(&repo_dir, "HEAD") {
-                                let key = (summary.repo_name.clone(), summary.short_sha.clone());
-                                if spoken_commits.insert(key) {
-                                    let _ = speak_commit(
-                                        engine,
-                                        &summary,
-                                        backend,
-                                        speed,
-                                        gain,
-                                        volume,
-                                        duck,
-                                        duck_level,
-                                        with_chime,
-                                    );
+                        if new_sha != prev_sha {
+                            match action_kind {
+                                HeadLogAction::Pull => {
+                                    if let Ok(summary) = CommitSummary::from_pull(
+                                        &repo_dir,
+                                        Some(&old_sha),
+                                        "HEAD",
+                                    ) {
+                                        let raw_sha = summary
+                                            .short_sha
+                                            .strip_prefix("pull-")
+                                            .unwrap_or(&summary.short_sha)
+                                            .to_string();
+                                        spoken_commits
+                                            .insert((summary.repo_name.clone(), raw_sha));
+                                        let key =
+                                            (summary.repo_name.clone(), summary.short_sha.clone());
+                                        if spoken_commits.insert(key) {
+                                            let _ = speak_commit(
+                                                engine,
+                                                &summary,
+                                                backend,
+                                                speed,
+                                                gain,
+                                                volume,
+                                                duck,
+                                                duck_level,
+                                                with_chime,
+                                            );
+                                        }
+                                    }
                                 }
+                                HeadLogAction::Commit => {
+                                    if let Ok(summary) = CommitSummary::from_repo(&repo_dir, "HEAD")
+                                    {
+                                        let key =
+                                            (summary.repo_name.clone(), summary.short_sha.clone());
+                                        if spoken_commits.insert(key) {
+                                            let _ = speak_commit(
+                                                engine,
+                                                &summary,
+                                                backend,
+                                                speed,
+                                                gain,
+                                                volume,
+                                                duck,
+                                                duck_level,
+                                                with_chime,
+                                            );
+                                        }
+                                    }
+                                }
+                                HeadLogAction::Ignore => {}
                             }
                         }
                     }
@@ -1164,20 +1643,19 @@ pub fn run_commit_watcher_daemon(
     }
 }
 
-/// Install a global Git `post-commit` hook (`~/.config/git/hooks/post-commit` + `core.hooksPath`)
-/// that chains any repo-local `.git/hooks/post-commit` first and then triggers `kokoro-speak`
-/// for **every Git repository anywhere on the machine**.
+/// Install global Git `post-commit` AND `post-merge` (`git pull`) hooks (`~/.config/git/hooks/`)
+/// via `core.hooksPath` so **every `git commit` and `git pull` in any repository on the machine**
+/// triggers the neural TTS changelog summary (< 2ms non-blocking).
 pub fn install_global_git_hook(kokoro_bin: &Path, port: u16) -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let hooks_dir = PathBuf::from(&home).join(".config/git/hooks");
     fs::create_dir_all(&hooks_dir)
         .map_err(|e| format!("Failed creating {}: {e}", hooks_dir.display()))?;
-    let post_commit = hooks_dir.join("post-commit");
 
-    let script = format!(
+    let post_commit = hooks_dir.join("post-commit");
+    let post_commit_script = format!(
         r#"#!/bin/sh
 # 8b-is-global-commit-tts-trigger
-# 1. Chain-execute the repository's own local .git/hooks/post-commit if present
 GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)"
 if [ -n "$GIT_DIR_PATH" ] && [ -x "$GIT_DIR_PATH/hooks/post-commit" ]; then
   case "$GIT_DIR_PATH/hooks/post-commit" in
@@ -1188,26 +1666,59 @@ if [ -n "$GIT_DIR_PATH" ] && [ -x "$GIT_DIR_PATH/hooks/post-commit" ]; then
   esac
 fi
 
-# 2. Fire non-blocking Kokoro Commit Summary TTS trigger (< 2ms)
 if [ "${{KOKORO_COMMIT_TTS:-1}}" != "0" ] && [ -x "{bin}" ]; then
-  "{bin}" commit --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --async-fire >/dev/null 2>&1 &
+  if [ -n "$KOKORO_PEER_HOST" ]; then
+    "{bin}" commit --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --peer "$KOKORO_PEER_HOST" --async-fire >/dev/null 2>&1 &
+  else
+    "{bin}" commit --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --async-fire >/dev/null 2>&1 &
+  fi
 fi
 "#,
         global_hook = post_commit.display(),
         bin = kokoro_bin.display(),
         port = port
     );
-
-    fs::write(&post_commit, script)
+    fs::write(&post_commit, post_commit_script)
         .map_err(|e| format!("Failed writing {}: {e}", post_commit.display()))?;
+
+    let post_merge = hooks_dir.join("post-merge");
+    let post_merge_script = format!(
+        r#"#!/bin/sh
+# 8b-is-global-pull-tts-trigger
+GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)"
+if [ -n "$GIT_DIR_PATH" ] && [ -x "$GIT_DIR_PATH/hooks/post-merge" ]; then
+  case "$GIT_DIR_PATH/hooks/post-merge" in
+    "{global_hook}") ;;
+    *)
+      KOKORO_COMMIT_TTS=0 "$GIT_DIR_PATH/hooks/post-merge" "$@" || true
+      ;;
+  esac
+fi
+
+if [ "${{KOKORO_COMMIT_TTS:-1}}" != "0" ] && [ -x "{bin}" ]; then
+  if [ -n "$KOKORO_PEER_HOST" ]; then
+    "{bin}" pull --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --peer "$KOKORO_PEER_HOST" --async-fire >/dev/null 2>&1 &
+  else
+    "{bin}" pull --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --async-fire >/dev/null 2>&1 &
+  fi
+fi
+"#,
+        global_hook = post_merge.display(),
+        bin = kokoro_bin.display(),
+        port = port
+    );
+    fs::write(&post_merge, post_merge_script)
+        .map_err(|e| format!("Failed writing {}: {e}", post_merge.display()))?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(&post_commit) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o755);
-            let _ = fs::set_permissions(&post_commit, perms);
+        for path in [&post_commit, &post_merge] {
+            if let Ok(meta) = fs::metadata(path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(path, perms);
+            }
         }
     }
 
@@ -1223,7 +1734,8 @@ fi
     Ok(post_commit)
 }
 
-/// Install an idempotent, non-blocking `.git/hooks/post-commit` trigger across all repos in `workspace_dir`.
+/// Install idempotent, non-blocking `.git/hooks/post-commit` and `.git/hooks/post-merge` (`git pull`)
+/// triggers across all repos in `workspace_dir`.
 pub fn install_workspace_hooks(
     workspace_dir: &Path,
     kokoro_bin: &Path,
@@ -1231,11 +1743,22 @@ pub fn install_workspace_hooks(
 ) -> Result<usize, String> {
     let mut installed = 0usize;
     let marker = "# 8b-is-commit-tts-trigger";
-    let hook_snippet = format!(
+    let commit_snippet = format!(
         r#"
 {marker}
 if [ "${{KOKORO_COMMIT_TTS:-1}}" != "0" ] && [ -x "{bin}" ]; then
   "{bin}" commit --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --async-fire >/dev/null 2>&1 &
+fi
+"#,
+        marker = marker,
+        bin = kokoro_bin.display(),
+        port = port
+    );
+    let pull_snippet = format!(
+        r#"
+{marker}
+if [ "${{KOKORO_COMMIT_TTS:-1}}" != "0" ] && [ -x "{bin}" ]; then
+  "{bin}" pull --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --async-fire >/dev/null 2>&1 &
 fi
 "#,
         marker = marker,
@@ -1248,28 +1771,28 @@ fi
         if !hooks_dir.exists() {
             let _ = fs::create_dir_all(&hooks_dir);
         }
-        let post_commit = hooks_dir.join("post-commit");
-        if post_commit.exists() {
-            let existing = fs::read_to_string(&post_commit).unwrap_or_default();
-            if existing.contains(marker) {
-                installed += 1;
-                continue;
+        for (hook_name, snippet) in [("post-commit", &commit_snippet), ("post-merge", &pull_snippet)] {
+            let hook_path = hooks_dir.join(hook_name);
+            if hook_path.exists() {
+                let existing = fs::read_to_string(&hook_path).unwrap_or_default();
+                if !existing.contains(marker) {
+                    let updated = format!("{}\n{}", existing.trim_end(), snippet);
+                    fs::write(&hook_path, updated)
+                        .map_err(|e| format!("Failed updating {}: {e}", hook_path.display()))?;
+                }
+            } else {
+                let content = format!("#!/bin/sh\n{}", snippet.trim_start());
+                fs::write(&hook_path, content)
+                    .map_err(|e| format!("Failed creating {}: {e}", hook_path.display()))?;
             }
-            let updated = format!("{}\n{}", existing.trim_end(), hook_snippet);
-            fs::write(&post_commit, updated)
-                .map_err(|e| format!("Failed updating {}: {e}", post_commit.display()))?;
-        } else {
-            let content = format!("#!/bin/sh\n{}", hook_snippet.trim_start());
-            fs::write(&post_commit, content)
-                .map_err(|e| format!("Failed creating {}: {e}", post_commit.display()))?;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = fs::metadata(&post_commit) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o755);
-                let _ = fs::set_permissions(&post_commit, perms);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = fs::metadata(&hook_path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o755);
+                    let _ = fs::set_permissions(&hook_path, perms);
+                }
             }
         }
         installed += 1;
@@ -1298,6 +1821,32 @@ pub fn spawn_detached_commit_speech(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to spawn detached commit speaker: {e}"))?;
+    Ok(())
+}
+
+/// Spawn a detached background `kokoro-speak pull` process when the daemon isn't running.
+pub fn spawn_detached_pull_speech(
+    kokoro_bin: &Path,
+    repo_path: &Path,
+    old_rev: Option<&str>,
+    new_rev: &str,
+) -> Result<(), String> {
+    let mut cmd = Command::new(kokoro_bin);
+    cmd.args([
+        "pull",
+        "--repo",
+        repo_path.to_str().unwrap_or("."),
+        "--new-rev",
+        new_rev,
+    ]);
+    if let Some(old) = old_rev {
+        cmd.args(["--old-rev", old]);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn detached pull speaker: {e}"))?;
     Ok(())
 }
 
@@ -1337,5 +1886,22 @@ mod tests {
         let chime = synthesize_vad_chime([1, 0, 1], 24000);
         assert!(chime.len() > 4000);
         assert!(chime.iter().any(|&x| x.abs() > 0.05));
+    }
+
+    #[test]
+    fn test_60s_spoken_and_audio_caps() {
+        let long_text = (0..220)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let capped = cap_spoken_text_to_60s(&long_text);
+        let word_count = capped.split_whitespace().count();
+        assert!(word_count <= MAX_SPOKEN_WORDS + 1);
+        assert!(capped.ends_with('.'));
+
+        let mut audio = vec![0.5f32; 24_000 * 75]; // 75 seconds at 24 kHz
+        cap_audio_to_60s(&mut audio, 24_000);
+        assert_eq!(audio.len(), 24_000 * 60);
+        assert!(audio.last().copied().unwrap_or(1.0).abs() < 1e-4);
     }
 }

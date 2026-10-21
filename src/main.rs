@@ -125,6 +125,41 @@ enum Commands {
         async_fire: bool,
     },
 
+    /// Speak a `git pull` changelog summary (summarized to <= 60 seconds) using our own TTS engines
+    Pull {
+        /// Path to the Git repository
+        #[arg(short, long, default_value = ".")]
+        repo: PathBuf,
+
+        /// Old revision before pull (default: `ORIG_HEAD`, fallback `HEAD~1`)
+        #[arg(long)]
+        old_rev: Option<String>,
+
+        /// New revision after pull (default: `HEAD`)
+        #[arg(long, default_value = "HEAD")]
+        new_rev: String,
+
+        /// TTS backend engine (`kokoro`, `mem8`, `lfm`)
+        #[arg(short, long, value_enum, default_value = "kokoro")]
+        engine: CommitTtsBackend,
+
+        /// Prepend the 3-trit (432/528/852 Hz) MEM|8 QuantTern harmonic pre-chime
+        #[arg(long, default_value_t = true)]
+        chime: bool,
+
+        /// Daemon port to push to when `--async-fire` or `--peer` is set
+        #[arg(short, long, default_value_t = 8420)]
+        port: u16,
+
+        /// Optional peer Mac host/IP (e.g. `192.168.11.13`) to beam the pull summary to
+        #[arg(long)]
+        peer: Option<String>,
+
+        /// Non-blocking fire-and-forget mode for `.git/hooks/post-merge` (< 2ms return)
+        #[arg(long)]
+        async_fire: bool,
+    },
+
     /// Speak any GitHub commit summary (`owner/repo` or omit for the latest push across your GitHub orgs/accounts)
     Github {
         /// GitHub `owner/repo` (e.g. `8b-is/esp32.vaked.dev` or `standardgalactic/laboratory`). Omit for latest global push!
@@ -259,14 +294,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let exe = std::env::current_exe()?;
         let count = commit_tts::install_workspace_hooks(workspace, &exe, *port)?;
         println!(
-            "✅ Installed non-blocking commit TTS post-commit hook across {} repositories in {}",
+            "✅ Installed non-blocking commit & pull TTS hooks (post-commit + post-merge) across {} repositories in {}",
             count,
             workspace.display()
         );
         if *global {
             let global_path = commit_tts::install_global_git_hook(&exe, *port)?;
             println!(
-                "🌍 Installed global Git post-commit hook at {} (triggers on ANY git repo on this Mac!)",
+                "🌍 Installed global Git post-commit & post-merge hooks at {} (triggers on ANY git repo on this Mac!)",
                 global_path.display()
             );
         }
@@ -298,6 +333,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !commit_tts::try_push_to_daemon(repo, rev, *port) {
                 let exe = std::env::current_exe()?;
                 commit_tts::spawn_detached_commit_speech(&exe, repo, rev)?;
+            }
+            return Ok(());
+        }
+    }
+
+    if let Some(Commands::Pull {
+        repo,
+        old_rev,
+        new_rev,
+        port,
+        peer,
+        async_fire,
+        ..
+    }) = &cli.command
+    {
+        if let Some(peer_host) = peer {
+            let summary = CommitSummary::from_pull(repo, old_rev.as_deref(), new_rev)?;
+            if commit_tts::try_push_summary_to_host(&summary, peer_host, *port) {
+                println!(
+                    "📡 Beamed pull [{} · {}] to peer {}:{}",
+                    summary.repo_name, summary.short_sha, peer_host, port
+                );
+                if *async_fire {
+                    return Ok(());
+                }
+            }
+        }
+        if *async_fire {
+            if !commit_tts::try_push_pull_to_daemon(repo, old_rev.as_deref(), new_rev, *port) {
+                let exe = std::env::current_exe()?;
+                commit_tts::spawn_detached_pull_speech(&exe, repo, old_rev.as_deref(), new_rev)?;
             }
             return Ok(());
         }
@@ -353,6 +419,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }) = &cli.command
     {
         let summary = CommitSummary::from_repo(repo, rev)?;
+        commit_tts::speak_commit(
+            &mut engine,
+            &summary,
+            *backend,
+            cli.speed,
+            cli.gain,
+            cli.volume,
+            cli.duck,
+            cli.duck_level,
+            *chime,
+        )?;
+        return Ok(());
+    }
+
+    if let Some(Commands::Pull {
+        repo,
+        old_rev,
+        new_rev,
+        engine: backend,
+        chime,
+        ..
+    }) = &cli.command
+    {
+        let summary = CommitSummary::from_pull(repo, old_rev.as_deref(), new_rev)?;
         commit_tts::speak_commit(
             &mut engine,
             &summary,
@@ -507,6 +597,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Some(Commands::Serve { .. })
         | Some(Commands::Commit { .. })
+        | Some(Commands::Pull { .. })
         | Some(Commands::Github { .. })
         | Some(Commands::WatchCommits { .. })
         | Some(Commands::InstallHooks { .. }) => unreachable!(),

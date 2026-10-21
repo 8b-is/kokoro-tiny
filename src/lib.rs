@@ -710,24 +710,24 @@ impl TtsEngine {
             .as_ref()
             .ok_or_else(|| "TTS engine not initialized".to_string())?;
 
-        // Map user-facing speed to model speed (user 1.0 = model 0.65)
+        // Map user-facing speed to model speed
         let model_speed = speed * SPEED_SCALE;
         let clamped_speed = model_speed.clamp(MIN_ENGINE_SPEED, MAX_ENGINE_SPEED);
         let voice = voice.unwrap_or(DEFAULT_VOICE);
 
-        // Parse voice style (e.g., "af_sky.8+af_bella.2" for mixing)
-        let style = self.parse_voice_style(voice)?;
+        // Validate voice specification upfront
+        let _ = self.parse_voice_style_for_len(voice, 1)?;
 
         // Short form: synthesize in one pass for predictable cadence
         if !needs_chunking(text) {
-            let mut audio = self.synthesize_segment(session, &style, text, clamped_speed, lang)?;
+            let mut audio = self.synthesize_segment(session, voice, text, clamped_speed, lang)?;
             if gain != 1.0 {
                 audio = amplify_audio(&audio, gain);
             }
             return Ok(audio);
         }
 
-        // Long-form synthesis path - chunk the text while preserving pacing
+        // Long-form synthesis path - chunk the text cleanly by sentence/clause while preserving pacing
         let prepared_chunks: Vec<String> = split_text_for_tts(text, MAX_CHARS_PER_CHUNK)
             .into_iter()
             .filter(|chunk| !chunk.trim().is_empty())
@@ -746,7 +746,7 @@ impl TtsEngine {
             MAX_CHARS_PER_CHUNK
         );
 
-        let overlap = chunk_crossfade_samples();
+        let pause_samples = ((SAMPLE_RATE as usize) * 80) / 1000; // 80ms natural inter-clause breath pause
         let mut combined_audio = Vec::new();
 
         for (idx, chunk) in prepared_chunks.iter().enumerate() {
@@ -758,8 +758,14 @@ impl TtsEngine {
                 chunk.chars().count()
             );
 
-            let chunk_audio = self.synthesize_segment(session, &style, chunk, clamped_speed, lang)?;
-            append_with_crossfade(&mut combined_audio, &chunk_audio, overlap);
+            let chunk_audio = self.synthesize_segment(session, voice, chunk, clamped_speed, lang)?;
+            let trimmed = trim_silence_edges(&chunk_audio, 0.0025);
+            if !trimmed.is_empty() {
+                if !combined_audio.is_empty() {
+                    combined_audio.extend(std::iter::repeat(0.0).take(pause_samples));
+                }
+                combined_audio.extend_from_slice(trimmed);
+            }
         }
 
         if combined_audio.is_empty() {
@@ -777,35 +783,70 @@ impl TtsEngine {
     fn synthesize_segment(
         &self,
         session: &Arc<Mutex<Session>>,
-        style: &[f32],
+        voice: &str,
         text: &str,
         speed: f32,
-        lang: Option<&str>
+        lang: Option<&str>,
     ) -> Result<Vec<f32>, String> {
-        // Convert text to phonemes
-        let phonemes = text_to_phonemes(text, lang.unwrap_or(DEFAULT_LANG), None, true, false)
+        let cleaned = clean_text_for_phonemizer(text);
+        if cleaned.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Convert text to phonemes via espeak-ng
+        let phonemes = text_to_phonemes(&cleaned, lang.unwrap_or(DEFAULT_LANG), None, true, false)
             .map_err(|e| format!("Failed to convert text to phonemes: {}", e))?;
 
-        // Join phonemes with spaces and add padding tokens at beginning and end
-        // Spaces between phonemes create natural pauses for commas and periods
-        // Padding tokens are crucial to prevent word dropping at beginning and end
-        let mut phonemes_text = phonemes.join(" ");
-        // Add multiple padding tokens for better buffering
-        phonemes_text.insert_str(0, "$$$");
-        phonemes_text.push_str("$$$");
+        // espeak-rs splits clauses on commas/semicolons/periods; rejoin with ", " when
+        // an internal clause has no trailing punctuation so prosodic pauses are preserved.
+        let mut phonemes_text = String::new();
+        let non_empty: Vec<&str> = phonemes
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        for (i, clause) in non_empty.iter().enumerate() {
+            if i > 0 {
+                phonemes_text.push(' ');
+            }
+            phonemes_text.push_str(clause);
+            if i + 1 < non_empty.len()
+                && !clause.ends_with(['.', '!', '?', ',', ';', ':', '—', '…'])
+            {
+                phonemes_text.push(',');
+            }
+        }
+
+        // Map phoneme characters to Kokoro vocab IDs, ignoring any unmapped char
+        // (NEVER map unknown chars to 0, because 0 is `$` = end-of-sequence pad token!)
+        let mut body_tokens = self.tokenize_body(&phonemes_text);
+        if body_tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Kokoro-82M context window is 512 tokens total ([0, ..<=508 tokens.., 0]) and 510 style rows
+        if body_tokens.len() > 508 {
+            body_tokens.truncate(508);
+        }
+
+        // Select the exact length-matched 256-dim style embedding row from `(510, 1, 256)`
+        let style = self.parse_voice_style_for_len(voice, body_tokens.len())?;
+
+        // Wrap with single start/end `$` (0) pad token as Kokoro-82M expects
+        let mut tokens = Vec::with_capacity(body_tokens.len() + 2);
+        tokens.push(0);
+        tokens.extend_from_slice(&body_tokens);
+        tokens.push(0);
 
         // Debug output only for long text
         #[cfg(not(feature = "as-lib"))]
         if text.len() > 50 {
             eprintln!("   Text length: {} chars", text.len());
             eprintln!("   Phonemes array: {} entries", phonemes.len());
-            eprintln!("   Phoneme text length: {} chars", phonemes_text.len());
+            eprintln!("   Phoneme tokens: {} (+2 pad)", body_tokens.len());
         }
 
-        let tokens = self.tokenize(phonemes_text);
-
-        // Run inference with user-specified speed directly
-        self.run_inference(session, tokens, style.to_vec(), speed)
+        // Run inference with length-matched style vector
+        self.run_inference(session, tokens, style, speed)
     }
 
     /// Save audio as WAV file
@@ -1046,15 +1087,31 @@ impl TtsEngine {
     // Private helper methods
 
     fn parse_voice_style(&self, voice_str: &str) -> Result<Vec<f32>, String> {
+        self.parse_voice_style_for_len(voice_str, 1)
+    }
+
+    /// Select the length-matched 256-dim style vector from the `(510, 1, 256)` voice pack
+    /// corresponding to `phoneme_token_len` (clamped to `0..510`), with normalized blend weights.
+    fn parse_voice_style_for_len(
+        &self,
+        voice_str: &str,
+        phoneme_token_len: usize,
+    ) -> Result<Vec<f32>, String> {
         if self.fallback_mode {
-            // Return a dummy style vector for fallback mode
             return Ok(vec![0.0; 256]);
         }
 
         let mut result = vec![0.0; 256];
         let parts: Vec<&str> = voice_str.split('+').collect();
+        let row_idx = phoneme_token_len.saturating_sub(1).min(509);
+        let row_offset = row_idx * 256;
+        let mut total_weight = 0.0_f32;
 
         for part in parts {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
             let (voice_name, weight) = if part.contains('.') {
                 let pieces: Vec<&str> = part.split('.').collect();
                 if pieces.len() != 2 {
@@ -1073,19 +1130,31 @@ impl TtsEngine {
                 .get(voice_name)
                 .ok_or_else(|| format!("Voice not found: {}", voice_name))?;
 
-            for (i, val) in voice_style.iter().enumerate() {
-                if i < result.len() {
-                    result[i] += val * weight;
-                }
+            let slice = if voice_style.len() >= row_offset + 256 {
+                &voice_style[row_offset..row_offset + 256]
+            } else {
+                &voice_style[..voice_style.len().min(256)]
+            };
+
+            for (i, val) in slice.iter().enumerate() {
+                result[i] += val * weight;
+            }
+            total_weight += weight;
+        }
+
+        if total_weight > 0.0 && (total_weight - 1.0).abs() > 1e-4 {
+            for v in &mut result {
+                *v /= total_weight;
             }
         }
 
         Ok(result)
     }
 
-    fn tokenize(&self, text: String) -> Vec<i64> {
+    fn tokenize_body(&self, text: &str) -> Vec<i64> {
         text.chars()
-            .map(|c| *self.vocab.get(&c).unwrap_or(&0))
+            .filter_map(|c| self.vocab.get(&c).copied())
+            .filter(|&id| id != 0)
             .collect()
     }
 
@@ -1377,57 +1446,133 @@ fn append_with_crossfade(buffer: &mut Vec<f32>, next: &[f32], overlap_samples: u
     buffer.extend_from_slice(&next[overlap..]);
 }
 
-// Split text into chunks for better synthesis
-// Kokoro model handles shorter text better without dropping words
+/// Trim leading and trailing near-silence samples so chunks join with clean prosody.
+fn trim_silence_edges<'a>(audio: &'a [f32], threshold: f32) -> &'a [f32] {
+    let start = audio
+        .iter()
+        .position(|&s| s.abs() > threshold)
+        .unwrap_or(0);
+    let end = audio
+        .iter()
+        .rposition(|&s| s.abs() > threshold)
+        .map(|i| (i + 1).min(audio.len()))
+        .unwrap_or(audio.len());
+    if start >= end {
+        audio
+    } else {
+        // Leave a tiny 10ms pad on each side so plosives aren't clipped
+        let pad = (SAMPLE_RATE as usize) * 10 / 1000;
+        let s = start.saturating_sub(pad);
+        let e = (end + pad).min(audio.len());
+        &audio[s..e]
+    }
+}
+
+/// Normalize text before passing to `espeak-ng` so code punctuation, stuck commas,
+/// slashes, arrows, and symbols are spoken naturally instead of garbled.
+fn clean_text_for_phonemizer(text: &str) -> String {
+    let mut s = text
+        .replace('`', "")
+        .replace("->", " to ")
+        .replace("→", " to ")
+        .replace("—", ", ")
+        .replace("–", ", ")
+        .replace(" + ", " and ")
+        .replace(" & ", " and ")
+        .replace('/', " ")
+        .replace('_', " ");
+
+    // Ensure a space follows commas/colons/semicolons when stuck between letters (e.g. "readme,deploy")
+    let mut spaced = String::with_capacity(s.len() + 16);
+    let chars: Vec<char> = s.chars().collect();
+    for i in 0..chars.len() {
+        let c = chars[i];
+        spaced.push(c);
+        if matches!(c, ',' | ';' | ':') && i + 1 < chars.len() && chars[i + 1].is_alphabetic() {
+            spaced.push(' ');
+        }
+    }
+    s = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !s.is_empty() && !s.ends_with(['.', '!', '?']) {
+        s.push('.');
+    }
+    s
+}
+
+// Split text into chunks for better synthesis while preserving punctuation and clause boundaries.
 fn split_text_for_tts(text: &str, max_chars: usize) -> Vec<String> {
-    // First try to split by sentences
-    let sentences: Vec<&str> = text
-        .split_terminator(&['.', '!', '?'][..])
-        .filter(|s| !s.trim().is_empty())
-        .collect();
+    let mut sentences: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    for ch in text.chars() {
+        buf.push(ch);
+        if matches!(ch, '.' | '!' | '?') {
+            if !buf.trim().is_empty() {
+                sentences.push(buf.trim().to_string());
+            }
+            buf.clear();
+        }
+    }
+    if !buf.trim().is_empty() {
+        let mut tail = buf.trim().to_string();
+        if !tail.ends_with(['.', '!', '?']) {
+            tail.push('.');
+        }
+        sentences.push(tail);
+    }
 
     let mut chunks = Vec::new();
     let mut current_chunk = String::new();
 
-    for sentence in sentences {
-        // Add back the punctuation if it was there
-        let full_sentence = if text.contains(&format!("{}.", sentence.trim())) {
-            format!("{}.", sentence.trim())
-        } else if text.contains(&format!("{}!", sentence.trim())) {
-            format!("{}!", sentence.trim())
-        } else if text.contains(&format!("{}?", sentence.trim())) {
-            format!("{}?", sentence.trim())
-        } else {
-            sentence.trim().to_string()
-        };
-
-        // If this sentence alone is too long, split it by commas or words
+    for full_sentence in sentences {
         if full_sentence.len() > max_chars {
-            // Try splitting by commas first
+            if !current_chunk.is_empty() {
+                chunks.push(current_chunk.trim().to_string());
+                current_chunk.clear();
+            }
+            // Split long sentence on commas/semicolons while preserving the comma for prosody
             let parts: Vec<&str> = full_sentence.split(',').collect();
             if parts.len() > 1 {
-                for part in parts {
-                    if part.trim().len() > max_chars {
-                        // Still too long, split by words
-                        chunks.extend(split_by_words(part, max_chars));
-                    } else if !part.trim().is_empty() {
-                        chunks.push(part.trim().to_string());
+                let mut clause_group = String::new();
+                for (idx, raw_part) in parts.iter().enumerate() {
+                    let part = raw_part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let with_punct = if idx + 1 < parts.len() {
+                        format!("{part},")
+                    } else {
+                        part.to_string()
+                    };
+                    if with_punct.len() > max_chars {
+                        if !clause_group.is_empty() {
+                            chunks.push(clause_group.trim().to_string());
+                            clause_group.clear();
+                        }
+                        chunks.extend(split_by_words(&with_punct, max_chars));
+                    } else if !clause_group.is_empty()
+                        && clause_group.len() + with_punct.len() + 1 > max_chars
+                    {
+                        chunks.push(clause_group.trim().to_string());
+                        clause_group = with_punct;
+                    } else {
+                        if !clause_group.is_empty() {
+                            clause_group.push(' ');
+                        }
+                        clause_group.push_str(&with_punct);
                     }
                 }
+                if !clause_group.is_empty() {
+                    chunks.push(clause_group.trim().to_string());
+                }
             } else {
-                // No commas, split by words
                 chunks.extend(split_by_words(&full_sentence, max_chars));
             }
-        }
-        // If adding this sentence would make chunk too long, save current and start new
-        else if !current_chunk.is_empty()
+        } else if !current_chunk.is_empty()
             && current_chunk.len() + full_sentence.len() + 1 > max_chars
         {
             chunks.push(current_chunk.trim().to_string());
             current_chunk = full_sentence;
-        }
-        // Add to current chunk
-        else {
+        } else {
             if !current_chunk.is_empty() {
                 current_chunk.push(' ');
             }
@@ -1435,12 +1580,10 @@ fn split_text_for_tts(text: &str, max_chars: usize) -> Vec<String> {
         }
     }
 
-    // Don't forget the last chunk
     if !current_chunk.is_empty() {
         chunks.push(current_chunk.trim().to_string());
     }
 
-    // If no chunks were created (text had no sentence endings), split by words
     if chunks.is_empty() && !text.trim().is_empty() {
         chunks = split_by_words(text, max_chars);
     }
