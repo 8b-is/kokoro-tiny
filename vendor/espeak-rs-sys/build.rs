@@ -215,9 +215,8 @@ fn main() {
         config.static_crt(static_crt);
     }
 
-    if cfg!(target_os = "macos") {
-        config.define("USE_LIBPCAUDIO", "OFF");
-    }
+    config.define("USE_LIBPCAUDIO", "OFF");
+    config.define("USE_LIBSONIC", "OFF");
 
     // General
     config
@@ -232,7 +231,7 @@ fn main() {
             },
         )
         .very_verbose(std::env::var("CMAKE_VERBOSE").is_ok()) // Not verbose by default
-        .always_configure(false);
+        .always_configure(true);
 
     let bindings_dir = config.build();
 

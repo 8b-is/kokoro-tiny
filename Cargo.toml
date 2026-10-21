@@ -26,7 +26,7 @@ required-features = ["playback"]  # MCP server needs playback for speak_to_user
 
 [dependencies]
 # Core ONNX Runtime for model inference
-ort = { version = "2.0.0-rc.11", features = ["download-binaries", "ndarray"] }
+ort = { version = "=2.0.0-rc.11", features = ["download-binaries", "ndarray"] }
 
 # Essential for text processing and audio
 espeak-rs = "0.1.9"
