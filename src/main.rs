@@ -112,16 +112,54 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         chime: bool,
 
-        /// Daemon port to push to when `--async-fire` is set
+        /// Daemon port to push to when `--async-fire` or `--peer` is set
         #[arg(short, long, default_value_t = 8420)]
         port: u16,
+
+        /// Optional peer Mac host/IP (e.g. `MacBook.local` or `192.168.11.13`) to beam the commit summary to
+        #[arg(long)]
+        peer: Option<String>,
 
         /// Non-blocking fire-and-forget mode for `.git/hooks/post-commit` (< 2ms return)
         #[arg(long)]
         async_fire: bool,
     },
 
-    /// Watch all Git repositories in a workspace and speak every background commit automatically
+    /// Speak any GitHub commit summary (`owner/repo` or omit for the latest push across your GitHub orgs/accounts)
+    Github {
+        /// GitHub `owner/repo` (e.g. `8b-is/esp32.vaked.dev` or `standardgalactic/laboratory`). Omit for latest global push!
+        repo: Option<String>,
+
+        /// Commit SHA or ref (default: latest push SHA or HEAD)
+        #[arg(long)]
+        rev: Option<String>,
+
+        /// Optional branch name hint
+        #[arg(long)]
+        branch: Option<String>,
+
+        /// TTS backend engine (`kokoro`, `mem8`, `lfm`)
+        #[arg(short, long, value_enum, default_value = "kokoro")]
+        engine: CommitTtsBackend,
+
+        /// Prepend the 3-trit (432/528/852 Hz) MEM|8 QuantTern harmonic pre-chime
+        #[arg(long, default_value_t = true)]
+        chime: bool,
+
+        /// Daemon port to push to when `--async-fire` or `--peer` is set
+        #[arg(short, long, default_value_t = 8420)]
+        port: u16,
+
+        /// Optional peer Mac host/IP (e.g. `MacBook.local`) to beam the GitHub commit summary to
+        #[arg(long)]
+        peer: Option<String>,
+
+        /// Non-blocking fire-and-forget mode (pushes to running daemon on `:8420`)
+        #[arg(long)]
+        async_fire: bool,
+    },
+
+    /// Watch all Git repositories in a workspace + live GitHub PushEvents and speak every background commit automatically
     WatchCommits {
         /// Workspace root containing Git repositories
         #[arg(
@@ -131,7 +169,7 @@ enum Commands {
         )]
         workspace: PathBuf,
 
-        /// TCP port for instant `post-commit` hook events & MEM|8 Hot Tub messages
+        /// TCP port for instant `post-commit` hook events, peer Mac triggers & MEM|8 Hot Tub messages
         #[arg(short, long, default_value_t = 8420)]
         port: u16,
 
@@ -144,7 +182,7 @@ enum Commands {
         chime: bool,
     },
 
-    /// Install non-blocking `.git/hooks/post-commit` TTS triggers across all repos in a workspace
+    /// Install non-blocking `.git/hooks/post-commit` + global `~/.config/git/hooks/post-commit` TTS triggers
     InstallHooks {
         /// Workspace root containing Git repositories
         #[arg(
@@ -157,6 +195,10 @@ enum Commands {
         /// Daemon port for the hook to push to
         #[arg(short, long, default_value_t = 8420)]
         port: u16,
+
+        /// Also install global `~/.config/git/hooks/post-commit` (`core.hooksPath`) for ANY git repo on the machine
+        #[arg(long, default_value_t = true)]
+        global: bool,
     },
 }
 
@@ -208,7 +250,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Fast-path commands that must return in < 5ms without loading the 325 MB ONNX model:
-    if let Some(Commands::InstallHooks { workspace, port }) = &cli.command {
+    if let Some(Commands::InstallHooks {
+        workspace,
+        port,
+        global,
+    }) = &cli.command
+    {
         let exe = std::env::current_exe()?;
         let count = commit_tts::install_workspace_hooks(workspace, &exe, *port)?;
         println!(
@@ -216,6 +263,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             count,
             workspace.display()
         );
+        if *global {
+            let global_path = commit_tts::install_global_git_hook(&exe, *port)?;
+            println!(
+                "🌍 Installed global Git post-commit hook at {} (triggers on ANY git repo on this Mac!)",
+                global_path.display()
+            );
+        }
         return Ok(());
     }
 
@@ -223,14 +277,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         repo,
         rev,
         port,
+        peer,
+        async_fire,
+        ..
+    }) = &cli.command
+    {
+        if let Some(peer_host) = peer {
+            let summary = CommitSummary::from_repo(repo, rev)?;
+            if commit_tts::try_push_summary_to_host(&summary, peer_host, *port) {
+                println!(
+                    "📡 Beamed commit [{} · {}] to peer {}:{}",
+                    summary.repo_name, summary.short_sha, peer_host, port
+                );
+                if *async_fire {
+                    return Ok(());
+                }
+            }
+        }
+        if *async_fire {
+            if !commit_tts::try_push_to_daemon(repo, rev, *port) {
+                let exe = std::env::current_exe()?;
+                commit_tts::spawn_detached_commit_speech(&exe, repo, rev)?;
+            }
+            return Ok(());
+        }
+    }
+
+    if let Some(Commands::Github {
+        repo,
+        rev,
+        branch,
+        port,
+        peer,
         async_fire: true,
         ..
     }) = &cli.command
     {
-        if !commit_tts::try_push_to_daemon(repo, rev, *port) {
-            let exe = std::env::current_exe()?;
-            commit_tts::spawn_detached_commit_speech(&exe, repo, rev)?;
+        if let Some(peer_host) = peer {
+            let summary = CommitSummary::from_github(
+                repo.as_deref(),
+                rev.as_deref(),
+                branch.as_deref(),
+            )?;
+            let _ = commit_tts::try_push_summary_to_host(&summary, peer_host, *port);
         }
+        let _ = commit_tts::try_push_github_to_daemon(
+            repo.as_deref(),
+            rev.as_deref(),
+            branch.as_deref(),
+            *port,
+        );
         return Ok(());
     }
 
@@ -257,6 +353,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }) = &cli.command
     {
         let summary = CommitSummary::from_repo(repo, rev)?;
+        commit_tts::speak_commit(
+            &mut engine,
+            &summary,
+            *backend,
+            cli.speed,
+            cli.gain,
+            cli.volume,
+            cli.duck,
+            cli.duck_level,
+            *chime,
+        )?;
+        return Ok(());
+    }
+
+    if let Some(Commands::Github {
+        repo,
+        rev,
+        branch,
+        engine: backend,
+        chime,
+        port,
+        peer,
+        ..
+    }) = &cli.command
+    {
+        let summary = CommitSummary::from_github(
+            repo.as_deref(),
+            rev.as_deref(),
+            branch.as_deref(),
+        )?;
+        if let Some(peer_host) = peer {
+            if commit_tts::try_push_summary_to_host(&summary, peer_host, *port) {
+                println!(
+                    "📡 Also beamed GitHub commit [{} · {}] to peer {}:{}",
+                    summary.repo_name, summary.short_sha, peer_host, port
+                );
+            }
+        }
         commit_tts::speak_commit(
             &mut engine,
             &summary,
@@ -373,6 +507,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Some(Commands::Serve { .. })
         | Some(Commands::Commit { .. })
+        | Some(Commands::Github { .. })
         | Some(Commands::WatchCommits { .. })
         | Some(Commands::InstallHooks { .. }) => unreachable!(),
 

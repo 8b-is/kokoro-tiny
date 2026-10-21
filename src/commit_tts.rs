@@ -179,6 +179,32 @@ impl CommitSummary {
         let stat_str = String::from_utf8_lossy(&stat_out.stdout);
         let (files_changed, insertions, deletions) = parse_shortstat(&stat_str);
 
+        Ok(Self::from_fields(
+            repo_name,
+            toplevel,
+            branch,
+            short_sha,
+            author,
+            raw_subject,
+            files_changed,
+            insertions,
+            deletions,
+        ))
+    }
+
+    /// Construct a `CommitSummary` directly from extracted commit fields.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_fields(
+        repo_name: String,
+        repo_path: String,
+        branch: String,
+        short_sha: String,
+        author: String,
+        raw_subject: String,
+        files_changed: usize,
+        insertions: usize,
+        deletions: usize,
+    ) -> Self {
         let (commit_type, scope, clean_subject) = parse_conventional_subject(&raw_subject);
         let affect = QuantTernAffect::from_commit(&commit_type, &raw_subject);
         let voice = select_kokoro_voice(&commit_type, &raw_subject);
@@ -195,9 +221,9 @@ impl CommitSummary {
             deletions,
         );
 
-        Ok(Self {
+        Self {
             repo_name,
-            repo_path: toplevel,
+            repo_path,
             branch,
             short_sha,
             author,
@@ -212,8 +238,149 @@ impl CommitSummary {
             voice,
             lfm_voice,
             spoken_text,
-        })
+        }
     }
+
+    /// Fetch and summarize any commit directly from GitHub (`owner/repo` + optional `rev`,
+    /// or `None` / `"latest"` to automatically grab the latest push across your GitHub accounts/orgs).
+    pub fn from_github(
+        owner_repo: Option<&str>,
+        rev: Option<&str>,
+        branch_hint: Option<&str>,
+    ) -> Result<Self, String> {
+        let (resolved_repo, resolved_rev, resolved_branch) = match owner_repo {
+            Some(r) if !r.trim().is_empty() && r.trim() != "latest" => {
+                let rev_str = rev
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("HEAD")
+                    .to_string();
+                let br_str = branch_hint.unwrap_or("main").to_string();
+                (r.trim().to_string(), rev_str, br_str)
+            }
+            _ => {
+                let events = poll_github_push_events();
+                let (repo_full, branch, head_sha) = events.into_iter().next().ok_or_else(|| {
+                    "No recent GitHub PushEvents found across configured GitHub feeds".to_string()
+                })?;
+                let target_rev = rev
+                    .filter(|s| !s.trim().is_empty() && *s != "HEAD")
+                    .unwrap_or(&head_sha)
+                    .to_string();
+                (repo_full, target_rev, branch)
+            }
+        };
+
+        let repo_short = resolved_repo
+            .rsplit('/')
+            .next()
+            .unwrap_or(&resolved_repo)
+            .to_string();
+
+        let gh_bin = find_gh_binary();
+        let endpoint = format!("repos/{}/commits/{}", resolved_repo, resolved_rev);
+        let jq_expr = r#"[.sha[0:7], (.commit.author.name // .author.login // "unknown"), (.commit.message | split("\n")[0]), (.files | length), (.stats.additions // 0), (.stats.deletions // 0)] | @tsv"#;
+
+        let out = Command::new(&gh_bin)
+            .args(["api", &endpoint, "--jq", jq_expr])
+            .output()
+            .map_err(|e| format!("Failed to invoke {gh_bin} api {endpoint}: {e}"))?;
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("gh api {endpoint} failed: {}", stderr.trim()));
+        }
+
+        let line = String::from_utf8_lossy(&out.stdout);
+        let parts: Vec<&str> = line.trim().split('\t').collect();
+        if parts.len() < 6 {
+            return Err(format!(
+                "Unexpected gh api output for {endpoint}: {}",
+                line.trim()
+            ));
+        }
+
+        let short_sha = parts[0].trim().to_string();
+        let author = parts[1].trim().to_string();
+        let raw_subject = parts[2].trim().to_string();
+        let files_changed = parts[3].trim().parse::<usize>().unwrap_or(0);
+        let insertions = parts[4].trim().parse::<usize>().unwrap_or(0);
+        let deletions = parts[5].trim().parse::<usize>().unwrap_or(0);
+
+        Ok(Self::from_fields(
+            repo_short,
+            format!("github:{resolved_repo}"),
+            resolved_branch,
+            short_sha,
+            author,
+            raw_subject,
+            files_changed,
+            insertions,
+            deletions,
+        ))
+    }
+}
+
+/// Locate the `gh` CLI binary across standard macOS / Homebrew / Linux paths.
+pub fn find_gh_binary() -> String {
+    for candidate in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "gh"] {
+        if Path::new(candidate).exists() || candidate == "gh" {
+            return candidate.to_string();
+        }
+    }
+    "gh".to_string()
+}
+
+/// Poll recent GitHub `PushEvent`s across configured user/org feeds.
+/// Returns `(owner_repo, branch, head_sha)` ordered newest-first.
+pub fn poll_github_push_events() -> Vec<(String, String, String)> {
+    let feeds_env = std::env::var("KOKORO_GITHUB_FEEDS").unwrap_or_else(|_| {
+        "users/peterlodri-sec/events?per_page=8,orgs/8b-is/events?per_page=8,users/standardgalactic/events?per_page=8".to_string()
+    });
+    let gh_bin = find_gh_binary();
+    let jq_expr = r#".[] | select(.type=="PushEvent") | [.created_at, .repo.name, (.payload.ref // "refs/heads/main"), (.payload.head // "")] | @tsv"#;
+
+    let mut rows: Vec<(String, String, String, String)> = Vec::new();
+    let mut seen_heads: HashSet<(String, String)> = HashSet::new();
+
+    for feed in feeds_env.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Ok(out) = Command::new(&gh_bin)
+            .args(["api", feed, "--jq", jq_expr])
+            .output()
+        {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for line in stdout.lines() {
+                    let cols: Vec<&str> = line.trim().split('\t').collect();
+                    if cols.len() >= 4 {
+                        let created = cols[0].to_string();
+                        let repo_full = cols[1].to_string();
+                        let branch = cols[2]
+                            .strip_prefix("refs/heads/")
+                            .unwrap_or(cols[2])
+                            .to_string();
+                        let head_sha = cols[3].to_string();
+                        if head_sha.len() >= 7 {
+                            let repo_short = repo_full
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or(&repo_full)
+                                .to_string();
+                            let dedup_key = (repo_short, head_sha[..7].to_string());
+                            if seen_heads.insert(dedup_key) {
+                                rows.push((created, repo_full, branch, head_sha));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort newest-first by ISO8601 `created_at`
+    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.into_iter()
+        .map(|(_, repo, branch, sha)| (repo, branch, sha))
+        .collect()
 }
 
 /// Parse `git show --shortstat` output like:
@@ -607,10 +774,20 @@ fn append_commit_tts_log(summary: &CommitSummary, wav_path: &Path) {
     }
 }
 
-/// Wire payload accepted on `127.0.0.1:8420` from `post-commit` hooks or direct callers.
+/// Wire payload accepted on `0.0.0.0:8420` from `post-commit` hooks, peer Macs, or GitHub triggers.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
 pub enum DaemonWireRequest {
+    DirectSummary {
+        summary: CommitSummary,
+    },
+    GitHubCommitEvent {
+        github_repo: Option<String>,
+        #[serde(default)]
+        rev: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+    },
     CommitEvent {
         repo_path: String,
         #[serde(default = "default_head_rev")]
@@ -628,15 +805,71 @@ fn default_head_rev() -> String {
     "HEAD".to_string()
 }
 
-/// Push a commit trigger to the running daemon on `127.0.0.1:port` (< 5ms).
-/// Returns `true` if the daemon accepted the trigger.
+/// Push a serialized `CommitSummary` to any daemon `host:port` (e.g. peer Mac over LAN / Thunderbolt bridge).
+pub fn try_push_summary_to_host(summary: &CommitSummary, host: &str, port: u16) -> bool {
+    use std::net::ToSocketAddrs;
+    let target = format!("{host}:{port}");
+    if let Ok(mut addrs) = target.to_socket_addrs() {
+        if let Some(addr) = addrs.next() {
+            if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(120)) {
+                let _ = stream.set_write_timeout(Some(Duration::from_millis(120)));
+                let payload = serde_json::json!({
+                    "summary": summary,
+                });
+                if writeln!(stream, "{}", payload).is_ok() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Push a commit trigger to the running daemon on `127.0.0.1:port` (< 5ms),
+/// and optionally mirror the `CommitSummary` to `KOKORO_PEER_HOST` (the other Mac!).
 pub fn try_push_to_daemon(repo_path: &Path, rev: &str, port: u16) -> bool {
+    let mut delivered = false;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(80)) {
         let _ = stream.set_write_timeout(Some(Duration::from_millis(80)));
         let payload = serde_json::json!({
             "repo_path": repo_path.display().to_string(),
             "rev": rev,
+        });
+        if writeln!(stream, "{}", payload).is_ok() {
+            delivered = true;
+        }
+    }
+
+    // Also forward to peer Mac if `KOKORO_PEER_HOST` is set (e.g. `192.168.11.12` or `192.168.11.13`)
+    if let Ok(peer_host) = std::env::var("KOKORO_PEER_HOST") {
+        let peer_trimmed = peer_host.trim();
+        if !peer_trimmed.is_empty() {
+            if let Ok(summary) = CommitSummary::from_repo(repo_path, rev) {
+                if try_push_summary_to_host(&summary, peer_trimmed, port) {
+                    delivered = true;
+                }
+            }
+        }
+    }
+
+    delivered
+}
+
+/// Push a GitHub commit trigger to the running daemon on `127.0.0.1:port`.
+pub fn try_push_github_to_daemon(
+    github_repo: Option<&str>,
+    rev: Option<&str>,
+    branch: Option<&str>,
+    port: u16,
+) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(80)) {
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(80)));
+        let payload = serde_json::json!({
+            "github_repo": github_repo,
+            "rev": rev,
+            "branch": branch,
         });
         if writeln!(stream, "{}", payload).is_ok() {
             return true;
@@ -688,8 +921,10 @@ fn parse_last_head_log_line(log_path: &Path) -> Option<(String, bool)> {
     Some((new_sha, is_commit_action))
 }
 
-/// Persistent background workspace daemon that watches all `.git/logs/HEAD` files
-/// AND listens on `127.0.0.1:port` for instant `post-commit` hook triggers.
+/// Persistent background workspace & GitHub daemon that watches:
+/// 1. Instant TCP push triggers on `0.0.0.0:port` (from local hooks, global hooks, or the peer Mac)
+/// 2. `.git/logs/HEAD` across all local workspace repositories
+/// 3. Live GitHub `PushEvent`s across `peterlodri-sec`, `8b-is`, and `standardgalactic`
 pub fn run_commit_watcher_daemon(
     engine: &mut TtsEngine,
     workspace_dir: &Path,
@@ -702,8 +937,9 @@ pub fn run_commit_watcher_daemon(
     duck_level: f32,
     with_chime: bool,
 ) -> Result<(), String> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .map_err(|e| format!("Failed to bind 127.0.0.1:{port}: {e}"))?;
+    let listener = TcpListener::bind(("0.0.0.0", port))
+        .or_else(|_| TcpListener::bind(("127.0.0.1", port)))
+        .map_err(|e| format!("Failed to bind port {port}: {e}"))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("Failed to set nonblocking listener: {e}"))?;
@@ -726,16 +962,30 @@ pub fn run_commit_watcher_daemon(
         }
     }
 
+    // Baseline existing GitHub PushEvent heads so we only speak *new* GitHub pushes after startup
+    let initial_gh_events = poll_github_push_events();
+    for (repo_full, _branch, head_sha) in &initial_gh_events {
+        if head_sha.len() >= 7 {
+            let repo_short = repo_full
+                .rsplit('/')
+                .next()
+                .unwrap_or(repo_full)
+                .to_string();
+            spoken_commits.insert((repo_short, head_sha[..7].to_string()));
+        }
+    }
+
     println!(
-        "🛰️  8b-is Commit TTS Daemon online! Watching {} git repos in {} + listening on 127.0.0.1:{}",
+        "🛰️  8b-is Commit TTS Daemon online! Watching {} local git repos in {} + {} GitHub push feeds + listening on 0.0.0.0:{}",
         log_states.len(),
         workspace_dir.display(),
+        initial_gh_events.len(),
         port
     );
 
     let mut tick: u64 = 0;
     loop {
-        // 1. Check for instant TCP push triggers from `.git/hooks/post-commit`
+        // 1. Check for instant TCP push triggers from `.git/hooks/post-commit`, global hooks, or peer Mac
         while let Ok((mut stream, _addr)) = listener.accept() {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
             let mut reader = BufReader::new(&mut stream);
@@ -743,6 +993,48 @@ pub fn run_commit_watcher_daemon(
             if reader.read_line(&mut line).unwrap_or(0) > 0 {
                 if let Ok(req) = serde_json::from_str::<DaemonWireRequest>(&line) {
                     match req {
+                        DaemonWireRequest::DirectSummary { summary } => {
+                            let key = (summary.repo_name.clone(), summary.short_sha.clone());
+                            if spoken_commits.insert(key) {
+                                let _ = speak_commit(
+                                    engine,
+                                    &summary,
+                                    backend,
+                                    speed,
+                                    gain,
+                                    volume,
+                                    duck,
+                                    duck_level,
+                                    with_chime,
+                                );
+                            }
+                        }
+                        DaemonWireRequest::GitHubCommitEvent {
+                            github_repo,
+                            rev,
+                            branch,
+                        } => {
+                            if let Ok(summary) = CommitSummary::from_github(
+                                github_repo.as_deref(),
+                                rev.as_deref(),
+                                branch.as_deref(),
+                            ) {
+                                let key = (summary.repo_name.clone(), summary.short_sha.clone());
+                                if spoken_commits.insert(key) {
+                                    let _ = speak_commit(
+                                        engine,
+                                        &summary,
+                                        backend,
+                                        speed,
+                                        gain,
+                                        volume,
+                                        duck,
+                                        duck_level,
+                                        with_chime,
+                                    );
+                                }
+                            }
+                        }
                         DaemonWireRequest::CommitEvent { repo_path, rev } => {
                             let path = PathBuf::from(&repo_path);
                             if let Ok(summary) = CommitSummary::from_repo(&path, &rev) {
@@ -834,8 +1126,101 @@ pub fn run_commit_watcher_daemon(
             }
         }
 
+        // 3. Poll GitHub PushEvents every ~15s (`tick % 100 == 0`) so any remote GitHub commit is spoken automatically
+        if tick % 100 == 0 {
+            for (repo_full, branch, head_sha) in poll_github_push_events() {
+                if head_sha.len() >= 7 {
+                    let repo_short = repo_full
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&repo_full)
+                        .to_string();
+                    let key = (repo_short, head_sha[..7].to_string());
+                    if !spoken_commits.contains(&key) {
+                        if let Ok(summary) = CommitSummary::from_github(
+                            Some(&repo_full),
+                            Some(&head_sha),
+                            Some(&branch),
+                        ) {
+                            spoken_commits.insert(key);
+                            let _ = speak_commit(
+                                engine,
+                                &summary,
+                                backend,
+                                speed,
+                                gain,
+                                volume,
+                                duck,
+                                duck_level,
+                                with_chime,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         std::thread::sleep(Duration::from_millis(150));
     }
+}
+
+/// Install a global Git `post-commit` hook (`~/.config/git/hooks/post-commit` + `core.hooksPath`)
+/// that chains any repo-local `.git/hooks/post-commit` first and then triggers `kokoro-speak`
+/// for **every Git repository anywhere on the machine**.
+pub fn install_global_git_hook(kokoro_bin: &Path, port: u16) -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let hooks_dir = PathBuf::from(&home).join(".config/git/hooks");
+    fs::create_dir_all(&hooks_dir)
+        .map_err(|e| format!("Failed creating {}: {e}", hooks_dir.display()))?;
+    let post_commit = hooks_dir.join("post-commit");
+
+    let script = format!(
+        r#"#!/bin/sh
+# 8b-is-global-commit-tts-trigger
+# 1. Chain-execute the repository's own local .git/hooks/post-commit if present
+GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)"
+if [ -n "$GIT_DIR_PATH" ] && [ -x "$GIT_DIR_PATH/hooks/post-commit" ]; then
+  case "$GIT_DIR_PATH/hooks/post-commit" in
+    "{global_hook}") ;;
+    *)
+      KOKORO_COMMIT_TTS=0 "$GIT_DIR_PATH/hooks/post-commit" "$@" || true
+      ;;
+  esac
+fi
+
+# 2. Fire non-blocking Kokoro Commit Summary TTS trigger (< 2ms)
+if [ "${{KOKORO_COMMIT_TTS:-1}}" != "0" ] && [ -x "{bin}" ]; then
+  "{bin}" commit --repo "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" --port {port} --async-fire >/dev/null 2>&1 &
+fi
+"#,
+        global_hook = post_commit.display(),
+        bin = kokoro_bin.display(),
+        port = port
+    );
+
+    fs::write(&post_commit, script)
+        .map_err(|e| format!("Failed writing {}: {e}", post_commit.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&post_commit) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&post_commit, perms);
+        }
+    }
+
+    let _ = Command::new("git")
+        .args([
+            "config",
+            "--global",
+            "core.hooksPath",
+            hooks_dir.to_str().unwrap_or("~/.config/git/hooks"),
+        ])
+        .status();
+
+    Ok(post_commit)
 }
 
 /// Install an idempotent, non-blocking `.git/hooks/post-commit` trigger across all repos in `workspace_dir`.
