@@ -13,7 +13,7 @@
 //!     let mut tts = TtsEngine::new().await.unwrap();
 //!
 //!     // Generate speech
-//!     let audio = tts.synthesize("Hello world!", None).unwrap();
+//!     let audio = tts.synthesize("Hello world!", None, None, None).unwrap();
 //!
 //!     // Save to file
 //!     tts.save_wav("output.wav", &audio).unwrap();
@@ -41,6 +41,10 @@ pub mod mem8_voice;
 
 // Background Commit Summary Narrator & Workspace Trigger
 pub mod commit_tts;
+
+// Base Hungarian (hu / Magyar) TTS & STT module
+pub mod hungarian;
+pub use hungarian::{SttEngine, SttOptions, SttResult};
 
 // MCP Server module for AI collaboration
 pub mod mcp_server;
@@ -257,6 +261,21 @@ impl SynthesizeOptions {
     /// Set gain multiplier (1.0 = normal)
     pub fn gain(mut self, gain: f32) -> Self {
         self.gain = gain;
+        self
+    }
+
+    /// Set language code (e.g., `"en"`, `"hu"`, `"hu-HU"`, `"magyar"`, `"auto"`)
+    pub fn lang(mut self, lang: &str) -> Self {
+        self.lang = Some(lang.to_string());
+        self
+    }
+
+    /// Configure options for Hungarian (`"hu"`) synthesis
+    pub fn hungarian(mut self) -> Self {
+        self.lang = Some("hu".to_string());
+        if self.voice.is_none() {
+            self.voice = Some("hu_mariska".to_string());
+        }
         self
     }
 }
@@ -716,17 +735,31 @@ impl TtsEngine {
         // Map user-facing speed to model speed
         let model_speed = speed * SPEED_SCALE;
         let clamped_speed = model_speed.clamp(MIN_ENGINE_SPEED, MAX_ENGINE_SPEED);
-        let voice = voice.unwrap_or(DEFAULT_VOICE);
+        let resolved_lang = hungarian::normalize_lang_code(lang, text);
+        let raw_voice = voice.unwrap_or(DEFAULT_VOICE);
+        let resolved_voice = hungarian::resolve_voice_alias(raw_voice, &resolved_lang);
 
         // Validate voice specification upfront
-        let _ = self.parse_voice_style_for_len(voice, 1)?;
+        let _ = self.parse_voice_style_for_len(&resolved_voice, 1)?;
 
         // Short form: synthesize in one pass for predictable cadence
         if !needs_chunking(text) {
-            let mut audio = self.synthesize_segment(session, voice, text, clamped_speed, lang)?;
+            let mut audio = self.synthesize_segment(
+                session,
+                &resolved_voice,
+                text,
+                clamped_speed,
+                Some(&resolved_lang),
+            )?;
             if gain != 1.0 {
                 audio = amplify_audio(&audio, gain);
             }
+            let ipa = if resolved_lang == "hu" {
+                hungarian::hungarian_graphemes_to_ipa(text)
+            } else {
+                String::new()
+            };
+            hungarian::remember_synthesized_audio(&audio, text, &resolved_lang, &ipa);
             return Ok(audio);
         }
 
@@ -761,7 +794,13 @@ impl TtsEngine {
                 chunk.chars().count()
             );
 
-            let chunk_audio = self.synthesize_segment(session, voice, chunk, clamped_speed, lang)?;
+            let chunk_audio = self.synthesize_segment(
+                session,
+                &resolved_voice,
+                chunk,
+                clamped_speed,
+                Some(&resolved_lang),
+            )?;
             let trimmed = trim_silence_edges(&chunk_audio, 0.0025);
             if !trimmed.is_empty() {
                 if !combined_audio.is_empty() {
@@ -780,7 +819,47 @@ impl TtsEngine {
             final_audio = amplify_audio(&final_audio, gain);
         }
 
+        let ipa = if resolved_lang == "hu" {
+            hungarian::hungarian_graphemes_to_ipa(text)
+        } else {
+            String::new()
+        };
+        hungarian::remember_synthesized_audio(&final_audio, text, &resolved_lang, &ipa);
+
         Ok(final_audio)
+    }
+
+    /// Synthesize Hungarian (`hu`) speech directly with automatic Magyar IPA normalization.
+    pub fn synthesize_hu(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+    ) -> Result<Vec<f32>, String> {
+        let hu_voice = voice.unwrap_or("hu_mariska");
+        self.synthesize_with_options(text, Some(hu_voice), DEFAULT_SPEED, 1.0, Some("hu"))
+    }
+
+    /// Transcribe a WAV file to text and IPA (defaults to Hungarian `"hu"` / `"auto"` when `lang` is `None`).
+    pub fn transcribe_wav(
+        &self,
+        wav_path: &str,
+        lang: Option<&str>,
+    ) -> Result<SttResult, String> {
+        let stt = SttEngine::new();
+        let opts = SttOptions::default().lang(lang.unwrap_or("auto"));
+        stt.transcribe_wav(wav_path, Some(opts))
+    }
+
+    /// Transcribe raw mono `f32` audio samples to text and IPA.
+    pub fn transcribe_samples(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+        lang: Option<&str>,
+    ) -> Result<SttResult, String> {
+        let stt = SttEngine::new();
+        let opts = SttOptions::default().lang(lang.unwrap_or("auto"));
+        stt.transcribe_samples(samples, sample_rate, Some(opts))
     }
 
     fn synthesize_segment(
@@ -791,14 +870,24 @@ impl TtsEngine {
         speed: f32,
         lang: Option<&str>,
     ) -> Result<Vec<f32>, String> {
-        let cleaned = clean_text_for_phonemizer(text);
+        let resolved_lang = hungarian::normalize_lang_code(lang, text);
+        let cleaned = if resolved_lang == "hu" {
+            hungarian::clean_text_for_hungarian_tts(text)
+        } else {
+            clean_text_for_phonemizer(text)
+        };
         if cleaned.trim().is_empty() {
             return Ok(Vec::new());
         }
 
-        // Convert text to phonemes via espeak-ng
-        let phonemes = text_to_phonemes(&cleaned, lang.unwrap_or(DEFAULT_LANG), None, true, false)
-            .map_err(|e| format!("Failed to convert text to phonemes: {}", e))?;
+        // Convert text to phonemes via espeak-ng (with pure-Rust Hungarian grapheme-to-IPA fallback)
+        let phonemes = match text_to_phonemes(&cleaned, &resolved_lang, None, true, false) {
+            Ok(p) if !p.is_empty() => p,
+            Ok(_) if resolved_lang == "hu" => vec![hungarian::hungarian_graphemes_to_ipa(&cleaned)],
+            Err(_) if resolved_lang == "hu" => vec![hungarian::hungarian_graphemes_to_ipa(&cleaned)],
+            Err(e) => return Err(format!("Failed to convert text to phonemes: {}", e)),
+            Ok(p) => p,
+        };
 
         // espeak-rs splits clauses on commas/semicolons/periods; rejoin with ", " when
         // an internal clause has no trailing punctuation so prosodic pauses are preserved.
@@ -818,6 +907,10 @@ impl TtsEngine {
             {
                 phonemes_text.push(',');
             }
+        }
+
+        if resolved_lang == "hu" {
+            phonemes_text = hungarian::normalize_hungarian_ipa_for_kokoro(&phonemes_text);
         }
 
         // Map phoneme characters to Kokoro vocab IDs, ignoring any unmapped char

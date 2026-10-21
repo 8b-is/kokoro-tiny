@@ -194,8 +194,13 @@ impl McpServer {
                         },
                         "voice": {
                             "type": "string",
-                            "description": "Voice preset to use (e.g., af_bella, am_adam, af_sky). Optional, defaults to af_sky.",
-                            "enum": ["af_sky", "af_bella", "af_nicole", "af_heart", "am_adam", "am_michael", "am_echo", "bf_emma", "bm_george"]
+                            "description": "Voice preset to use (e.g., af_bella, am_adam, af_sky, hu_mariska, hu_peter). Optional, defaults to af_sky.",
+                            "enum": ["af_sky", "af_bella", "af_nicole", "af_heart", "am_adam", "am_michael", "am_echo", "bf_emma", "bm_george", "hu_mariska", "hu_anna", "hu_eva", "hu_peter", "hu_bela", "hu_boldog"]
+                        },
+                        "lang": {
+                            "type": "string",
+                            "description": "Language code ('auto', 'en', 'hu' / 'magyar'). Optional, defaults to 'auto' (auto-detects Hungarian).",
+                            "enum": ["auto", "en", "hu", "hu-HU", "magyar"]
                         },
                         "speed": {
                             "type": "number",
@@ -262,7 +267,11 @@ impl McpServer {
                         },
                         "voice": {
                             "type": "string",
-                            "description": "Voice preset to use. Optional, defaults to af_sky."
+                            "description": "Voice preset to use. Optional, defaults to af_sky (or hu_mariska for Hungarian)."
+                        },
+                        "lang": {
+                            "type": "string",
+                            "description": "Language code ('auto', 'en', 'hu'). Optional, defaults to 'auto'."
                         },
                         "speed": {
                             "type": "number",
@@ -270,6 +279,54 @@ impl McpServer {
                         }
                     },
                     "required": ["text", "output_path"]
+                }),
+            },
+            Tool {
+                name: "speak_hungarian".to_string(),
+                description: "Speak Hungarian (Magyar) text with Hungarian IPA phonemization and Magyar voice presets (`hu_mariska`, `hu_anna`, `hu_eva`, `hu_peter`, `hu_bela`, `hu_boldog`). Optionally saves to a WAV file.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Hungarian (Magyar) text to speak"
+                        },
+                        "voice": {
+                            "type": "string",
+                            "description": "Hungarian voice preset (`hu_mariska`, `hu_anna`, `hu_eva`, `hu_peter`, `hu_bela`, `hu_boldog`). Defaults to `hu_mariska`."
+                        },
+                        "speed": {
+                            "type": "number",
+                            "description": "Speech speed (0.5 to 2.0). Defaults to 1.0."
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Optional WAV file path to save the synthesized Hungarian speech"
+                        }
+                    },
+                    "required": ["text"]
+                }),
+            },
+            Tool {
+                name: "transcribe_audio".to_string(),
+                description: "Base Speech-to-Text (STT) transcription from a WAV audio file, supporting Hungarian (`hu` / `hu-HU` / `magyar`) and English (`en`). Returns text, IPA phoneme stream, VAD speech ratio, and confidence.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "wav_path": {
+                            "type": "string",
+                            "description": "Path to the WAV file to transcribe"
+                        },
+                        "lang": {
+                            "type": "string",
+                            "description": "Target language code (`hu`, `en`, `auto`). Defaults to `hu`."
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Optional vocabulary/context prompt for Hungarian or domain terms"
+                        }
+                    },
+                    "required": ["wav_path"]
                 }),
             },
         ];
@@ -307,6 +364,8 @@ impl McpServer {
         match tool_name {
             "speak_to_user" => self.tool_speak_to_user(arguments),
             "speak_with_emotion" => self.tool_speak_with_emotion(arguments),
+            "speak_hungarian" => self.tool_speak_hungarian(arguments),
+            "transcribe_audio" => self.tool_transcribe_audio(arguments),
             "list_voices" => self.tool_list_voices(),
             "synthesize_to_file" => self.tool_synthesize_to_file(arguments),
             _ => Err(McpError {
@@ -330,6 +389,9 @@ impl McpServer {
         let voice = args.get("voice")
             .and_then(|v| v.as_str());
 
+        let lang = args.get("lang")
+            .and_then(|v| v.as_str());
+
         let speed = args.get("speed")
             .and_then(|v| v.as_f64())
             .unwrap_or(1.0) as f32;
@@ -338,10 +400,11 @@ impl McpServer {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.8) as f32;
 
-        eprintln!("🔊 Speaking: \"{}\" with voice {:?}", text, voice);
+        let resolved_lang = crate::hungarian::normalize_lang_code(lang, text);
+        eprintln!("🔊 Speaking [{}]: \"{}\" with voice {:?}", resolved_lang, text, voice);
 
         // Synthesize audio
-        let audio = self.tts.synthesize_with_speed(text, voice, speed, None)
+        let audio = self.tts.synthesize_with_speed(text, voice, speed, Some(&resolved_lang))
             .map_err(|e| McpError {
                 code: -32603,
                 message: format!("Synthesis failed: {}", e),
@@ -466,6 +529,12 @@ impl McpServer {
             ("am_echo", "Confident American male", "Announcements, important info"),
             ("bf_emma", "Clear British female", "Warnings, polite messages"),
             ("bm_george", "British male", "Narration, storytelling"),
+            ("hu_mariska", "Warm Hungarian female (Mariska tribute blend)", "Hungarian TTS default, warm Magyar speech"),
+            ("hu_anna", "Clear Budapest female narration", "Hungarian articles, books, documentation"),
+            ("hu_eva", "Gentle Hungarian female (Éva / Sanctuary)", "Poetic Hungarian, Sanctuary narration"),
+            ("hu_peter", "Grounded Hungarian male (Péter blend)", "Hungarian male narration & dialogue"),
+            ("hu_bela", "Confident Hungarian male baritone", "Announcements, alerts in Magyar"),
+            ("hu_boldog", "Lyrical Hungarian voice (Boldog Még)", "Poetry, lyrics, heartfelt Hungarian messages"),
         ];
 
         let voices: Vec<_> = voice_descriptions.iter().map(|(name, desc, use_case)| {
@@ -512,14 +581,18 @@ impl McpServer {
         let voice = args.get("voice")
             .and_then(|v| v.as_str());
 
+        let lang = args.get("lang")
+            .and_then(|v| v.as_str());
+
         let speed = args.get("speed")
             .and_then(|v| v.as_f64())
             .unwrap_or(1.0) as f32;
 
-        eprintln!("💾 Saving to file: {}", output_path);
+        let resolved_lang = crate::hungarian::normalize_lang_code(lang, text);
+        eprintln!("💾 Saving [{}] to file: {}", resolved_lang, output_path);
 
         // Synthesize audio
-        let audio = self.tts.synthesize_with_speed(text, voice, speed, None)
+        let audio = self.tts.synthesize_with_speed(text, voice, speed, Some(&resolved_lang))
             .map_err(|e| McpError {
                 code: -32603,
                 message: format!("Synthesis failed: {}", e),
@@ -534,21 +607,154 @@ impl McpServer {
                 data: None,
             })?;
 
+        let ipa = if resolved_lang == "hu" {
+            crate::hungarian::hungarian_graphemes_to_ipa(text)
+        } else {
+            String::new()
+        };
+        crate::SttEngine::write_sidecar(output_path, text, &resolved_lang, &ipa);
+
         let duration_ms = (audio.len() as f32 / 24000.0 * 1000.0) as u32;
 
         Ok(serde_json::json!({
             "content": [{
                 "type": "text",
-                "text": format!("💾 Saved audio to: {}\nDuration: {}ms\nVoice: {}",
+                "text": format!("💾 Saved audio to: {}\nLanguage: {}\nDuration: {}ms\nVoice: {}",
                     output_path,
+                    resolved_lang,
                     duration_ms,
                     voice.unwrap_or("af_sky")
                 )
             }],
             "success": true,
             "path": output_path,
+            "lang": resolved_lang,
+            "ipa": ipa,
             "duration_ms": duration_ms,
             "voice": voice.unwrap_or("af_sky")
+        }))
+    }
+
+    /// Tool: speak_hungarian
+    fn tool_speak_hungarian(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, McpError> {
+        let text = args.get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: -32602,
+                message: "Missing 'text' parameter".to_string(),
+                data: None,
+            })?;
+
+        let voice = args.get("voice")
+            .and_then(|v| v.as_str())
+            .unwrap_or("hu_mariska");
+
+        let speed = args.get("speed")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+
+        let output_path = args.get("output_path")
+            .and_then(|v| v.as_str());
+
+        let audio = self.tts.synthesize_with_speed(text, Some(voice), speed, Some("hu"))
+            .map_err(|e| McpError {
+                code: -32603,
+                message: format!("Hungarian synthesis failed: {}", e),
+                data: None,
+            })?;
+
+        let ipa = crate::hungarian::hungarian_graphemes_to_ipa(text);
+
+        if let Some(path) = output_path {
+            self.tts.save_audio(path, &audio)
+                .map_err(|e| McpError {
+                    code: -32603,
+                    message: format!("Failed to save file: {}", e),
+                    data: None,
+                })?;
+            crate::SttEngine::write_sidecar(path, text, "hu", &ipa);
+        }
+
+        #[cfg(feature = "playback")]
+        if output_path.is_none() {
+            self.tts.play(&audio, 0.85)
+                .map_err(|e| McpError {
+                    code: -32603,
+                    message: format!("Playback failed: {}", e),
+                    data: None,
+                })?;
+        }
+
+        let duration_ms = (audio.len() as f32 / 24000.0 * 1000.0) as u32;
+
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "🇭🇺 Magyar TTS: \"{}\"\nIPA: /{}/\nVoice: {}\nDuration: {}ms",
+                    text, ipa, voice, duration_ms
+                )
+            }],
+            "lang": "hu",
+            "ipa": ipa,
+            "voice": voice,
+            "duration_ms": duration_ms,
+            "output_path": output_path
+        }))
+    }
+
+    /// Tool: transcribe_audio
+    fn tool_transcribe_audio(&self, args: &serde_json::Value) -> Result<serde_json::Value, McpError> {
+        let wav_path = args.get("wav_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError {
+                code: -32602,
+                message: "Missing 'wav_path' parameter".to_string(),
+                data: None,
+            })?;
+
+        let lang = args.get("lang")
+            .and_then(|v| v.as_str())
+            .unwrap_or("hu");
+
+        let prompt = args.get("prompt")
+            .and_then(|v| v.as_str());
+
+        let stt = crate::SttEngine::new();
+        let mut opts = crate::SttOptions::default().lang(lang);
+        if let Some(p) = prompt {
+            opts = opts.prompt(p);
+        }
+
+        let res = stt.transcribe_wav(wav_path, Some(opts))
+            .map_err(|e| McpError {
+                code: -32603,
+                message: format!("STT transcription failed: {}", e),
+                data: None,
+            })?;
+
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "🎧 STT [{} · {}]: \"{}\"\nIPA: /{}/\nDuration: {}ms · Confidence: {:.0}%",
+                    res.lang,
+                    res.backend,
+                    res.text,
+                    res.ipa,
+                    res.duration_ms,
+                    res.confidence * 100.0
+                )
+            }],
+            "text": res.text,
+            "lang": res.lang,
+            "ipa": res.ipa,
+            "confidence": res.confidence,
+            "duration_ms": res.duration_ms,
+            "rms_energy": res.rms_energy,
+            "voiced_ratio": res.voiced_ratio,
+            "estimated_syllables": res.estimated_syllables,
+            "backend": res.backend
         }))
     }
 }

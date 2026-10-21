@@ -22,6 +22,7 @@
 - 🧠 **MEM8 Integration** - Consciousness layer for AI memory persistence
 - 📱 **CLI Tool** - `kokoro-speak` binary for alerts and announcements
 - 🤖 **MCP Server** ⭐ NEW! - AI collaboration with voice (Claude can speak to you!)
+- 🇭🇺 **Base Hungarian (Magyar) TTS + STT** ⭐ NEW! - Automatic Hungarian language detection (`ő, ű, á, é, í, ó, ö, ú, ü`), Hungarian IPA normalization for Kokoro 82M (`gy -> dʲ`, `ty -> tʲ`, `cs -> ʧ`, `dzs -> ʤ`, `ny -> ɲ`, `sz -> s`, `zs -> ʒ`, `s -> ʃ`, `á -> ɑː`), Magyar voice presets (`hu_mariska`, `hu_peter`, `hu_boldog`), and multi-tier Speech-to-Text (`SttEngine`, `kokoro-speak stt`, MCP `transcribe_audio`)!
 
 ---
 
@@ -100,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tts = TtsEngine::new().await?;
 
     // Generate speech with default voice (af_sky)
-    let audio = tts.synthesize("Hello world!", None)?;
+    let audio = tts.synthesize("Hello world!", None, None, None)?;
 
     // Save to WAV file
     tts.save_wav("output.wav", &audio)?;
@@ -127,6 +128,44 @@ let opts = SynthesizeOptions::default()
     .gain(1.5);            // Louder output
 
 let audio = tts.synthesize_with("Custom speech", opts)?;
+```
+
+### 🇭🇺 Base Hungarian (Magyar) TTS + STT
+
+```rust
+use kokoro_tiny::{TtsEngine, SynthesizeOptions, SttEngine, SttOptions};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut tts = TtsEngine::new().await?;
+
+    // 1. Direct Hungarian TTS (auto-normalizes Magyar IPA & uses `hu_mariska` blend)
+    let audio = tts.synthesize_hu(
+        "Köszönöm szépen a figyelmet, Péter! Lehetnél boldog még. <3",
+        Some("hu_boldog"),
+    )?;
+    tts.save_wav("/tmp/magyar.wav", &audio)?;
+
+    // 2. Or via SynthesizeOptions::default().hungarian()
+    let opts = SynthesizeOptions::default().hungarian().voice("hu_peter");
+    let _audio2 = tts.synthesize_with("Sosincsen késő már, te csak lépj és várj.", opts)?;
+
+    // 3. Base Hungarian Speech-to-Text (STT) from WAV or raw samples
+    let stt = SttEngine::hungarian();
+    let transcript = stt.transcribe_wav("/tmp/magyar.wav", Some(SttOptions::hungarian()))?;
+    println!("Transcript [{}]: {}", transcript.lang, transcript.text);
+    println!("IPA: /{}/", transcript.ipa);
+    Ok(())
+}
+```
+
+**CLI (`kokoro-speak`)**:
+```bash
+# Speak Hungarian directly (or save with -o)
+kokoro-speak hu "Köszönöm szépen a figyelmet, Péter! Lehetnél boldog még. <3"
+
+# Transcribe a Hungarian WAV file (Speech-to-Text + IPA + VAD metrics)
+kokoro-speak stt /tmp/magyar.wav --lang hu
 ```
 
 ---

@@ -55,6 +55,10 @@ struct Cli {
     /// Audio gain/amplification (0.5 = quieter, 1.0 = normal, 2.0+ = louder, 4.0+ = maximum)
     #[arg(short = 'g', long, default_value = "1.5")]
     gain: f32,
+
+    /// Language code ("auto", "en", "hu" / "magyar")
+    #[arg(short = 'L', long, default_value = "auto")]
+    lang: String,
 }
 
 #[derive(Subcommand)]
@@ -63,6 +67,26 @@ enum Commands {
     Say {
         /// Text to speak
         text: String,
+    },
+
+    /// Speak Hungarian (Magyar) text directly with Hungarian IPA & voice preset
+    Hu {
+        /// Hungarian text to speak
+        text: String,
+    },
+
+    /// Transcribe a WAV file to text & IPA (Speech-to-Text, defaults to Hungarian `hu`)
+    Stt {
+        /// Path to the WAV audio file
+        wav_path: String,
+
+        /// Language code ("hu", "en", "auto")
+        #[arg(short, long, default_value = "hu")]
+        lang: String,
+
+        /// Emit JSON output
+        #[arg(long)]
+        json: bool,
     },
 
     /// Read from stdin (perfect for piped input)
@@ -390,6 +414,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if let Some(Commands::Stt {
+        wav_path,
+        lang,
+        json,
+    }) = &cli.command
+    {
+        let stt = kokoro_tiny::SttEngine::new();
+        let opts = kokoro_tiny::SttOptions::default().lang(lang);
+        let result = stt.transcribe_wav(wav_path, Some(opts))?;
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+            println!("🎧 STT Transcription [{} · {}]:", result.lang, result.backend);
+            println!("   Text:       {}", result.text);
+            if !result.ipa.is_empty() {
+                println!("   IPA:        /{}/", result.ipa);
+            }
+            println!(
+                "   Metrics:    {} ms · confidence {:.0}% · RMS {:.4} · voiced {:.0}% ({} syllables)",
+                result.duration_ms,
+                result.confidence * 100.0,
+                result.rms_energy,
+                result.voiced_ratio * 100.0,
+                result.estimated_syllables
+            );
+        }
+        return Ok(());
+    }
+
     // Initialize TTS engine (uses ~/.cache/k automatically)
     let mut engine = rt
         .block_on(TtsEngine::new())
@@ -400,6 +453,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("🎤 Available voices:");
         for voice in engine.voices() {
             println!("  • {}", voice);
+        }
+        println!("\n🇭🇺 Hungarian (Magyar) voice presets:");
+        for &(alias, blend, desc) in kokoro_tiny::hungarian::HUNGARIAN_VOICE_PRESETS {
+            println!("  • {} -> {} ({})", alias, blend, desc);
         }
         return Ok(());
     }
@@ -561,8 +618,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Get text to speak based on command
-    let (text, voice) = match cli.command {
-        Some(Commands::Say { text }) => (text, cli.voice),
+    let (text, voice, resolved_lang) = match cli.command {
+        Some(Commands::Say { text }) => (text, cli.voice, cli.lang.clone()),
+
+        Some(Commands::Hu { text }) => {
+            let v = if cli.voice == "af_sky" {
+                "hu_mariska".to_string()
+            } else {
+                cli.voice
+            };
+            (text, v, "hu".to_string())
+        }
 
         Some(Commands::Pipe) => {
             // Read from stdin
@@ -571,7 +637,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for line in stdin.lock().lines() {
                 lines.push(line?);
             }
-            (lines.join(" "), cli.voice)
+            (lines.join(" "), cli.voice, cli.lang.clone())
         }
 
         Some(Commands::Alert {
@@ -580,16 +646,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             let text = message.unwrap_or_else(|| alert_type.default_message().to_string());
             let voice = alert_type.voice().to_string();
-            (text, voice)
+            (text, voice, cli.lang.clone())
         }
 
         Some(Commands::Context { text, prefix }) => {
             let full_text = format!("{} {}", prefix, text);
             // Use a clear, professional voice for context summaries
-            (full_text, "bf_isabella".to_string())
+            (full_text, "bf_isabella".to_string(), cli.lang.clone())
         }
 
         Some(Commands::Serve { .. })
+        | Some(Commands::Stt { .. })
         | Some(Commands::Commit { .. })
         | Some(Commands::Pull { .. })
         | Some(Commands::Github { .. })
@@ -602,6 +669,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("💡 No input provided. Use --help for usage information.");
                 eprintln!("\nQuick examples:");
                 eprintln!("  kokoro-speak say \"Hello world!\"");
+                eprintln!("  kokoro-speak hu \"Köszönöm szépen a figyelmet, Péter!\"");
+                eprintln!("  kokoro-speak stt /tmp/magyar.wav --lang hu");
                 eprintln!("  echo \"Build complete\" | kokoro-speak pipe");
                 eprintln!("  kokoro-speak alert success");
                 eprintln!(
@@ -615,13 +684,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for line in stdin.lock().lines() {
                 lines.push(line?);
             }
-            (lines.join(" "), cli.voice)
+            (lines.join(" "), cli.voice, cli.lang.clone())
         }
     };
 
-    // Synthesize speech with speed and gain control
+    // Synthesize speech with speed, gain, and language control
+    let final_lang = kokoro_tiny::hungarian::normalize_lang_code(Some(&resolved_lang), &text);
     let audio = engine
-        .synthesize_with_options(&text, Some(&voice), cli.speed, cli.gain, Some("en"))
+        .synthesize_with_options(&text, Some(&voice), cli.speed, cli.gain, Some(&final_lang))
         .map_err(|e| format!("Synthesis failed: {}", e))?;
 
     // Output to file or play
@@ -629,7 +699,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         engine
             .save_wav(&output_path, &audio)
             .map_err(|e| format!("Failed to save audio: {}", e))?;
-        println!("💾 Saved to: {}", output_path);
+        let ipa = if final_lang == "hu" {
+            kokoro_tiny::hungarian::hungarian_graphemes_to_ipa(&text)
+        } else {
+            String::new()
+        };
+        kokoro_tiny::SttEngine::write_sidecar(&output_path, &text, &final_lang, &ipa);
+        println!("💾 Saved to: {} [lang: {}]", output_path, final_lang);
     } else {
         #[cfg(feature = "playback")]
         {
@@ -645,13 +721,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 String::new()
             };
 
+            let preview = if text.chars().count() > 50 {
+                format!("{}...", text.chars().take(50).collect::<String>())
+            } else {
+                text.clone()
+            };
+
             println!(
-                "🔊 Speaking: \"{}\" [voice: {}, speed: {}x, volume: {}{}{}]",
-                if text.len() > 50 {
-                    format!("{}...", &text[..50])
-                } else {
-                    text.clone()
-                },
+                "🔊 Speaking [{}]: \"{}\" [voice: {}, speed: {}x, volume: {}{}{}]",
+                final_lang,
+                preview,
                 voice,
                 cli.speed,
                 cli.volume,

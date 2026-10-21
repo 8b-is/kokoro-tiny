@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match tts.set_audio_device(Some(device.to_string())) {
                 Ok(_) => {
                     let text = format!("Testing {} output.", name);
-                    match tts.synthesize(&text, None) {
+                    match tts.synthesize(&text, None, None, None) {
                         Ok(audio) => match tts.play(&audio, 0.9) {
                             Ok(_) => println!("   ✅ Playback successful\n"),
                             Err(e) => println!("   ❌ Playback failed: {}\n", e),

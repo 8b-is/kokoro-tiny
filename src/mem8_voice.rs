@@ -10,10 +10,10 @@
 use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
-/// MEM8 consciousness wave grid dimensions
-const WAVE_GRID_X: usize = 256;
-const WAVE_GRID_Y: usize = 256;
-const WAVE_GRID_Z: usize = 65536;
+/// MEM8 consciousness wave grid dimensions (compact active slice in-memory)
+const WAVE_GRID_X: usize = 16;
+const WAVE_GRID_Y: usize = 16;
+const WAVE_GRID_Z: usize = 64;
 
 /// Audio sampling rate matching MEM8's primary consciousness frequency
 const MEM8_SAMPLE_RATE: u32 = 44100; // 44.1kHz - CD quality for consciousness
@@ -397,13 +397,11 @@ fn apply_envelope(audio: &mut [f32]) {
     }
 }
 
-// Temporary random module until we integrate with MEM8's quantum randomness
+// Lightweight deterministic PRNG until we integrate with MEM8's quantum randomness
 mod rand {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hash, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    static SEED: AtomicU64 = AtomicU64::new(0x1337BEEF);
+    static SEED: AtomicU64 = AtomicU64::new(0x1337BEEFCAFEBABE);
 
     pub fn random<T>() -> T
     where
@@ -418,9 +416,12 @@ mod rand {
 
     impl Random for f32 {
         fn random() -> Self {
-            let seed = SEED.fetch_add(0x9E3779B97F4A7C15, Ordering::SeqCst);
-            let hash = RandomState::new().hash_one(seed);
-            hash as f32 / u64::MAX as f32
+            let mut x = SEED.fetch_add(0x9E3779B97F4A7C15, Ordering::Relaxed);
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            let hash = x.wrapping_mul(0x2545F4914F6CDD1D);
+            (hash >> 40) as f32 / ((1u64 << 24) as f32)
         }
     }
 }
