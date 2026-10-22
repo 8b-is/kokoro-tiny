@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let confused_wave = MemoryWave {
         amplitude: 1.0,
         frequency: 200.0,
-        phase: 3.14, // Out of phase!
+        phase: std::f32::consts::PI, // Out of phase!
         decay_rate: 0.3,
         emotion_type: EmotionType::Confusion(0.8),
         content: "What? Don't understand".to_string(),

@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tts = TtsEngine::new().await?;
 
     // Test phrases that might drop words
-    let test_phrases = vec![
+    let test_phrases = [
         "Let me tell you son",
         "Let me",
         "me tell you",

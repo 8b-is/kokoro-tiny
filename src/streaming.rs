@@ -454,7 +454,7 @@ mod tests {
     fn test_chunk_splitting() {
         let text = "This is a test. It has multiple sentences! Should be split correctly?";
         let chunks = StreamingTts::split_into_chunks(text);
-        assert!(chunks.len() > 0);
+        assert!(!chunks.is_empty());
         for chunk in &chunks {
             assert!(chunk.len() <= MAX_CHUNK_SIZE * 10); // Rough character estimate
         }

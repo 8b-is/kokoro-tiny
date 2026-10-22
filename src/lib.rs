@@ -476,7 +476,7 @@ impl TtsEngine {
                     let on_progress = on_progress.clone();
                     if let Err(e) = download_file_with_progress(
                         MODEL_URL, model_path,
-                        Some(Box::new(move |p| on_progress(p))),
+                        Some(Box::new(on_progress)),
                         MODEL_SIZE,
                     ).await {
                         #[cfg(not(feature = "as-lib"))]
@@ -492,7 +492,7 @@ impl TtsEngine {
                     let on_progress = on_progress.clone();
                     if let Err(e) = download_file_with_progress(
                         VOICES_URL, voices_path,
-                        Some(Box::new(move |p| on_progress(p))),
+                        Some(Box::new(on_progress)),
                         VOICES_SIZE,
                     ).await {
                         #[cfg(not(feature = "as-lib"))]
@@ -804,7 +804,7 @@ impl TtsEngine {
             let trimmed = trim_silence_edges(&chunk_audio, 0.0025);
             if !trimmed.is_empty() {
                 if !combined_audio.is_empty() {
-                    combined_audio.extend(std::iter::repeat(0.0).take(pause_samples));
+                    combined_audio.extend(std::iter::repeat_n(0.0, pause_samples));
                 }
                 combined_audio.extend_from_slice(trimmed);
             }
@@ -1464,8 +1464,7 @@ fn samples_to_wav_bytes(audio: &[f32], sample_rate: u32) -> Result<Vec<u8>, Stri
     writer
         .finalize()
         .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
-    
-    drop(cursor);
+
     Ok(wav_data)
 }
 
@@ -1543,7 +1542,7 @@ fn append_with_crossfade(buffer: &mut Vec<f32>, next: &[f32], overlap_samples: u
 }
 
 /// Trim leading and trailing near-silence samples so chunks join with clean prosody.
-fn trim_silence_edges<'a>(audio: &'a [f32], threshold: f32) -> &'a [f32] {
+fn trim_silence_edges(audio: &[f32], threshold: f32) -> &[f32] {
     let start = audio
         .iter()
         .position(|&s| s.abs() > threshold)
@@ -1575,8 +1574,7 @@ fn clean_text_for_phonemizer(text: &str) -> String {
         .replace("–", ", ")
         .replace(" + ", " and ")
         .replace(" & ", " and ")
-        .replace('/', " ")
-        .replace('_', " ");
+        .replace(['/', '_'], " ");
 
     // Ensure a space follows commas/colons/semicolons when stuck between letters (e.g. "readme,deploy")
     let mut spaced = String::with_capacity(s.len() + 16);

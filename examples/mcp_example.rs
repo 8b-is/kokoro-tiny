@@ -23,7 +23,7 @@ fn main() {
     println!("  cargo run --features playback --bin kokoro-mcp\n");
     println!("Then paste these JSON-RPC requests (one per line):\n");
 
-    let requests = vec![
+    let requests = [
         (
             "Initialize",
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,

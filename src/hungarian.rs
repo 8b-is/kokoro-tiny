@@ -283,8 +283,7 @@ pub fn clean_text_for_hungarian_tts(text: &str) -> String {
         .replace(" + ", " és ")
         .replace(" & ", " és ")
         .replace('%', " százalék ")
-        .replace('/', " ")
-        .replace('_', " ");
+        .replace(['/', '_'], " ");
 
     let mut spaced = String::with_capacity(s.len() + 16);
     let chars: Vec<char> = s.chars().collect();
@@ -465,7 +464,7 @@ pub fn hungarian_graphemes_to_ipa(text: &str) -> String {
                         continue;
                     }
                     (c1, c2) if c1 == c2 && !"aáeéiíoóöőuúüű".contains(c1) => {
-                        ipa.push_str(&single_hungarian_char_to_ipa(c1));
+                        ipa.push_str(single_hungarian_char_to_ipa(c1));
                         ipa.push('ː');
                         i += 2;
                         continue;
@@ -474,7 +473,7 @@ pub fn hungarian_graphemes_to_ipa(text: &str) -> String {
                 }
             }
 
-            ipa.push_str(&single_hungarian_char_to_ipa(lower[i]));
+            ipa.push_str(single_hungarian_char_to_ipa(lower[i]));
             i += 1;
         }
 

@@ -85,13 +85,13 @@ impl IdentityBfp64 {
         for block in 0..4 {
             let mut acc_i16: i16 = 0;
             let m = &self.mantissas[block];
-            for k in 0..64 {
+            for (k, &m_k_i8) in m.iter().enumerate() {
                 // Deterministic ternary weight {-1, 0, +1} per phoneme & dimension
                 let h = ((phoneme_seed as usize)
                     .wrapping_mul(131)
                     .wrapping_add(block * 64 + k))
                     & 3;
-                let m_k = m[k] as i16;
+                let m_k = m_k_i8 as i16;
                 acc_i16 += match h {
                     1 => m_k,
                     2 => -m_k,
@@ -612,7 +612,7 @@ impl Mem8Voice {
                 prng_state = prng_state
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
-                let breath_noise = (((prng_state >> 48) as i64) - 32_768) * breath_scale_pq >> 16;
+                let breath_noise = ((((prng_state >> 48) as i64) - 32_768) * breath_scale_pq) >> 16;
 
                 let emo_pq = ((((enriched_pq * trem_pq) >> 16) * vib_pq) >> 16) + breath_noise;
 
@@ -829,7 +829,7 @@ mod tests {
         let mut voice = Mem8Voice::new();
         voice.set_emotion(0.8, 0.7, 0.6); // Happy, excited, confident
         let audio = voice.synthesize_from_consciousness("I love you", 500);
-        assert!(audio.len() > 0);
+        assert!(!audio.is_empty());
     }
 
     #[test]

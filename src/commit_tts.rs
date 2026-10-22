@@ -812,6 +812,7 @@ pub fn cap_audio_to_60s(samples: &mut Vec<f32>, sample_rate: u32) {
 }
 
 /// Construct the natural-language sentence spoken for a commit.
+#[allow(clippy::too_many_arguments)]
 pub fn build_spoken_narration(
     repo_name: &str,
     branch: &str,
@@ -929,15 +930,16 @@ pub fn synthesize_vad_chime(trits: [i8; 3], sample_rate: u32) -> Vec<f32> {
             let overtone = 0.28 * (2.0 * PI * freq * 1.5 * t).sin();
             out.push(0.18 * env * (fundamental + overtone));
         }
-        out.extend(std::iter::repeat(0.0).take(gap_samples));
+        out.extend(std::iter::repeat_n(0.0, gap_samples));
     }
     // 45ms silence tail before speech starts
-    out.extend(std::iter::repeat(0.0).take((sample_rate as usize) * 45 / 1000));
+    out.extend(std::iter::repeat_n(0.0, (sample_rate as usize) * 45 / 1000));
     out
 }
 
 /// Speak a `CommitSummary` using our own TTS engines (`Kokoro`, `Mem8`, or `Lfm`),
 /// guaranteed never to exceed 60 seconds.
+#[allow(clippy::too_many_arguments)]
 pub fn speak_commit(
     engine: &mut TtsEngine,
     summary: &CommitSummary,
@@ -1127,6 +1129,7 @@ fn append_commit_tts_log(summary: &CommitSummary, wav_path: &Path) {
 /// Wire payload accepted on `0.0.0.0:8420` from `post-commit` / `post-merge` hooks, peer Macs, or GitHub triggers.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum DaemonWireRequest {
     DirectSummary {
         summary: CommitSummary,
@@ -1376,6 +1379,7 @@ fn parse_last_head_log_line(log_path: &Path) -> Option<(String, String, HeadLogA
 /// 1. Instant TCP push triggers on `0.0.0.0:port` (from local `post-commit`/`post-merge` hooks, global hooks, or peer Mac)
 /// 2. `.git/logs/HEAD` across all local workspace repositories (both commits and `git pull`s!)
 /// 3. Live GitHub `PushEvent`s across `peterlodri-sec`, `8b-is`, and `standardgalactic`
+#[allow(clippy::too_many_arguments)]
 pub fn run_commit_watcher_daemon(
     engine: &mut TtsEngine,
     workspace_dir: &Path,
@@ -1569,7 +1573,7 @@ pub fn run_commit_watcher_daemon(
 
         // 2. Poll `.git/logs/HEAD` metadata across the workspace every ~750ms
         tick = tick.wrapping_add(1);
-        if tick % 5 == 0 {
+        if tick.is_multiple_of(5) {
             for (repo_dir, log_path) in discover_head_logs(workspace_dir) {
                 let Ok(meta) = fs::metadata(&log_path) else {
                     continue;
@@ -1655,7 +1659,7 @@ pub fn run_commit_watcher_daemon(
         }
 
         // 3. Poll GitHub PushEvents every ~15s (`tick % 100 == 0`) so any remote GitHub commit is spoken automatically
-        if tick % 100 == 0 {
+        if tick.is_multiple_of(100) {
             for (repo_full, branch, head_sha) in poll_github_push_events() {
                 if head_sha.len() >= 7 {
                     let repo_short = repo_full
