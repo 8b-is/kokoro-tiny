@@ -21,7 +21,12 @@ voices-v1.0.bin
 .vscode/
 .claude_consciousness.m8
 .claude/
-*.m8
 !assets/**
+.m8
+**/.m8
+*.m8
+.mrm8
+**/.mrm8
+*.mrm8
 /docs-confie
 .worktrees/
