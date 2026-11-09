@@ -880,6 +880,16 @@ impl TtsEngine {
             return Ok(Vec::new());
         }
 
+        // Ensure espeak-rs finds system espeak-ng-data even if cargo target build dir was cleaned
+        if std::env::var_os("PIPER_ESPEAKNG_DATA_DIRECTORY").is_none() {
+            for candidate in ["/usr/share", "/usr/local/share"] {
+                if Path::new(candidate).join("espeak-ng-data/phontab").exists() {
+                    std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", candidate);
+                    break;
+                }
+            }
+        }
+
         // Convert text to phonemes via espeak-ng (with pure-Rust Hungarian grapheme-to-IPA fallback)
         let phonemes = match text_to_phonemes(&cleaned, &resolved_lang, None, true, false) {
             Ok(p) if !p.is_empty() => p,
@@ -1820,43 +1830,16 @@ eprintln!(
     }
 }
 
-// Audio ducking functions - reduce system volume during TTS playback
+// Audio ducking functions - never inject synthetic VolumeUp/VolumeDown keystrokes
 #[cfg(feature = "ducking")]
 fn duck_system_audio(level: f32) -> Result<(), String> {
-    // Calculate how many volume-down presses we need
-    // Assuming each press is ~6% volume change on most systems
-    let steps = ((1.0 - level) * 16.0) as u32; // 16 steps = ~100% volume range
-
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| format!("Failed to initialize Enigo: {:?}", e))?;
-
-    // Press volume down keys to reduce system volume
-    for _ in 0..steps {
-        enigo
-            .key(Key::VolumeDown, enigo::Direction::Click)
-            .map_err(|e| format!("Failed to press volume down: {:?}", e))?;
-        thread::sleep(Duration::from_millis(20)); // Small delay between key presses
-    }
-
+    let _ = level;
     Ok(())
 }
 
 #[cfg(feature = "ducking")]
 fn restore_system_audio(level: f32) -> Result<(), String> {
-    // Calculate how many volume-up presses to restore
-    let steps = ((1.0 - level) * 16.0) as u32;
-
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| format!("Failed to initialize Enigo: {:?}", e))?;
-
-    // Press volume up keys to restore system volume
-    for _ in 0..steps {
-        enigo
-            .key(Key::VolumeUp, enigo::Direction::Click)
-            .map_err(|e| format!("Failed to press volume up: {:?}", e))?;
-        thread::sleep(Duration::from_millis(20)); // Small delay between key presses
-    }
-
+    let _ = level;
     Ok(())
 }
 
